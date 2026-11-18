@@ -33,6 +33,14 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import android.app.AlertDialog;
+import android.database.Cursor;
+import android.provider.OpenableColumns;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Locale;
@@ -180,7 +188,7 @@ public class MainActivity extends Activity {
         if (fs == null) return;
         for (File f : fs) {
             if (f.isDirectory() && depth > 0) scan(f, depth - 1, out);
-            else if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".exe")) out.add(f);
+            else if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".exe") && !f.getName().equalsIgnoreCase("autorun.exe")) out.add(f);
         }
     }
 
@@ -199,20 +207,23 @@ public class MainActivity extends Activity {
         scan(dir, 3, exes);
         Collections.sort(exes, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
         if (exes.isEmpty()) {
-            TextView t = text("No programs found.\nCopy Gizmondo (Windows CE ARM) .exe files into:\n" + dir.getAbsolutePath()
-                    + "\n\nThat folder appears to the program as \\Storage Card, so keep each game's data files beside it.", 14, SUBTEXT, false);
+            TextView t = text("No games yet.\nTap Install game to add a Gizmondo game (.zip or .exe) or a folder, or copy files into:\n" + dir.getAbsolutePath()
+                    + "\n\nHold a game in the list to remove it.", 14, SUBTEXT, false);
             t.setPadding(0, dp(12), 0, dp(12));
             list.addView(t);
         }
         for (File f : exes) {
             String rel = f.getParentFile().equals(dir) ? "" : dir.toURI().relativize(f.getParentFile().toURI()).getPath();
             String name = f.getName().substring(0, f.getName().length() - 4);
-            list.addView(row(name, rel.isEmpty() ? null : rel, "Play", v -> play(f)));
+            LinearLayout r = row(name, rel.isEmpty() ? null : rel, "Play", v -> play(f));
+            r.setOnLongClickListener(v -> { confirmDelete(f); return true; });
+            list.addView(r);
         }
+        Button install = pill("Install game", v -> showInstallMenu());
         Button settings = pill("Settings", v -> showSettings());
         Button refresh = pill("Refresh", v -> showHome());
         LinearLayout buttons = new LinearLayout(this);
-        buttons.addView(refresh); buttons.addView(settings);
+        buttons.addView(install); buttons.addView(refresh); buttons.addView(settings);
         page("GizmondoDroid", list, buttons);
     }
 
@@ -336,9 +347,147 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+
+    // ----------------------------------------------------------------- installer --
+    static final int REQ_FILE = 100, REQ_TREE = 101;
+    private volatile boolean installing;
+
+    /** The folder the game sees as \\Storage Card: its top-level folder in the library (or the library itself). */
+    private File gameRoot(File exe) {
+        File lib = gamesDir(), d = exe.getParentFile();
+        while (d != null && !d.getParentFile().equals(lib) && !d.equals(lib)) d = d.getParentFile();
+        return d == null ? lib : d;
+    }
+
+    private void showInstallMenu() {
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.addView(text("Install a Gizmondo game from a .zip (as downloaded), a single .exe, or a folder. It is copied into the library and given its own virtual SD card.", 13, SUBTEXT, false));
+        list.addView(row("From a .zip or .exe file", "Pick the file", null, v -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("*/*");
+            startActivityForResult(i, REQ_FILE);
+        }));
+        list.addView(row("From a folder", "Copies everything inside it", null, v ->
+            startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_TREE)));
+        page("Install game", list, pill("Back", v -> showHome()));
+    }
+
+    @Override protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (res != RESULT_OK || data == null || data.getData() == null) return;
+        Uri u = data.getData();
+        if (req == REQ_FILE) runInstall(() -> installFile(u));
+        else if (req == REQ_TREE) runInstall(() -> installTree(u));
+    }
+
+    private void showBusy(String msg) {
+        ui.post(() -> {
+            View old = root.findViewWithTag("busy");
+            if (old instanceof TextView) { ((TextView) old).setText(msg); return; }
+            TextView t = text(msg, 16, TEXT, true);
+            t.setTag("busy"); t.setGravity(Gravity.CENTER); t.setBackgroundColor(0xE0000000); t.setClickable(true);
+            root.addView(t, new FrameLayout.LayoutParams(-1, -1));
+        });
+    }
+
+    interface Job { void run() throws Exception; }
+
+    private void runInstall(Job job) {
+        if (installing) return;
+        installing = true;
+        showBusy("Installing…");
+        new Thread(() -> {
+            String err = null;
+            try { job.run(); } catch (Exception e) { err = e.getMessage() != null ? e.getMessage() : "Install failed"; }
+            final String m = err;
+            installing = false;
+            ui.post(() -> { toast(m == null ? "Installed" : m); showHome(); });
+        }).start();
+    }
+
+    private String displayName(Uri u) {
+        try (Cursor c = getContentResolver().query(u, new String[]{ OpenableColumns.DISPLAY_NAME }, null, null, null)) {
+            if (c != null && c.moveToFirst()) return c.getString(0);
+        } catch (Exception ignored) { }
+        String p = u.getLastPathSegment(); return p == null ? "game" : p.substring(p.lastIndexOf('/') + 1);
+    }
+
+    private static String cleanName(String n) {
+        int dot = n.lastIndexOf('.'); if (dot > 0) n = n.substring(0, dot);
+        n = n.replaceAll("(?i)\\.zip$", "").replaceAll("[^A-Za-z0-9 _.()+-]", "_").trim();
+        return n.isEmpty() ? "game" : n;
+    }
+
+    private void installFile(Uri u) throws Exception {
+        String name = displayName(u);
+        File dest = new File(gamesDir(), cleanName(name));
+        dest.mkdirs();
+        if (name.toLowerCase(Locale.ROOT).endsWith(".zip")) {
+            try (InputStream in = getContentResolver().openInputStream(u); ZipInputStream z = new ZipInputStream(in)) {
+                ZipEntry e; int n = 0; byte[] buf = new byte[65536];
+                String base = dest.getCanonicalPath() + File.separator;
+                while ((e = z.getNextEntry()) != null) {
+                    File out = new File(dest, e.getName());
+                    if (!out.getCanonicalPath().startsWith(base)) continue;      // no path escapes
+                    if (e.isDirectory()) { out.mkdirs(); continue; }
+                    out.getParentFile().mkdirs();
+                    try (OutputStream o = new FileOutputStream(out)) { int r; while ((r = z.read(buf)) > 0) o.write(buf, 0, r); }
+                    if (++n % 20 == 0) showBusy("Installing " + dest.getName() + "…\n" + n + " files");
+                }
+            }
+        } else if (name.toLowerCase(Locale.ROOT).endsWith(".exe")) {
+            copyUri(u, new File(dest, name));
+        } else throw new Exception("Pick a .zip or .exe file");
+    }
+
+    private void copyUri(Uri u, File out) throws Exception {
+        out.getParentFile().mkdirs();
+        try (InputStream in = getContentResolver().openInputStream(u); OutputStream o = new FileOutputStream(out)) {
+            byte[] buf = new byte[65536]; int r; while ((r = in.read(buf)) > 0) o.write(buf, 0, r);
+        }
+    }
+
+    private void installTree(Uri tree) throws Exception {
+        String id = android.provider.DocumentsContract.getTreeDocumentId(tree);
+        File dest = new File(gamesDir(), cleanName(id.substring(id.lastIndexOf(':') + 1).replace('/', ' ')));
+        dest.mkdirs();
+        int[] count = { 0 };
+        copyTree(tree, id, dest, count);
+        if (count[0] == 0) throw new Exception("That folder is empty");
+    }
+
+    private void copyTree(Uri tree, String docId, File dest, int[] count) throws Exception {
+        Uri kids = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId);
+        try (Cursor c = getContentResolver().query(kids, new String[]{ android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME, android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE }, null, null, null)) {
+            while (c != null && c.moveToNext()) {
+                String cid = c.getString(0), nm = c.getString(1).replaceAll("[\\\\/:*?\"<>|]", "_");
+                if (android.provider.DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2))) { File d = new File(dest, nm); d.mkdirs(); copyTree(tree, cid, d, count); }
+                else { copyUri(android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, cid), new File(dest, nm)); if (++count[0] % 10 == 0) showBusy("Copying…\n" + count[0] + " files"); }
+            }
+        }
+    }
+
+    private void confirmDelete(File exe) {
+        File root = gameRoot(exe);
+        boolean wholeLibrary = root.equals(gamesDir());
+        String what = wholeLibrary ? exe.getName() : root.getName();
+        new AlertDialog.Builder(this).setTitle("Remove " + what + "?")
+            .setMessage(wholeLibrary ? "Deletes this program file." : "Deletes the game folder, including its saves.")
+            .setPositiveButton("Remove", (d, w) -> { deleteRec(wholeLibrary ? exe : root); showHome(); })
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    private static void deleteRec(File f) {
+        File[] k = f.listFiles();
+        if (k != null) for (File c : k) deleteRec(c);
+        f.delete();
+    }
+
     // ----------------------------------------------------------------- game --
     private void play(File exe) {
-        File sd = gamesDir();
+        File sd = gameRoot(exe);
         if (!NativeLib.launch(exe.getAbsolutePath(), sd.getAbsolutePath(), sysDir().getAbsolutePath(), "")) {
             toast(NativeLib.lastError()); return;
         }
