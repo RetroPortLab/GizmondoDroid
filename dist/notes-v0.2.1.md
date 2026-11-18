@@ -1,4 +1,4 @@
-GizmondoDroid v0.2
+GizmondoDroid v0.2.1 (replaces v0.2, which shipped the v0.1 APK by mistake)
 
 - New: software OpenGL ES 1.x + EGL, so 3D Gizmondo games load. Carmageddon (Gizmondo beta) now boots to its language menu and the Gizmondo logo screens.
 - Texture support: RGBA/RGB/565/4444 uploads, OES paletted and S3TC (DXT1/3/5) compressed textures.
