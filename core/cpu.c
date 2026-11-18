@@ -980,6 +980,10 @@ int cpu_run(int cycles) {
                 cpu.hle_hook(pc);
                 if (cpu.r[15] != pc || cpu.halted) { cpu.budget -= 1; continue; }
             }
+        } else if (cpu.hle_hook && (pc & 0xFFFF0000u) == 0xF0000000u) {   /* CE kernel call slots */
+            cpu.abort = 0;
+            cpu.hle_hook(pc);
+            if (cpu.r[15] != pc || cpu.halted) { cpu.budget -= 1; continue; }
         }
         interp_step(pc);
     }

@@ -3,6 +3,8 @@
 #include "gizmondo.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
+#include <unistd.h>
 
 extern void (*hle_log_sink)(const char *line);
 static char g_sd[512], g_sys[512];
@@ -14,14 +16,18 @@ void giz_set_audio_rate(uint32_t hz) { audio_rate = hz ? hz : 44100; }
 int giz_launch(const char *exe, const char *sd, const char *sys, const char *args, char *err, int errlen) {
     char dummy[8]; if (!err) { err = dummy; errlen = sizeof dummy; }
     err[0] = 0;
-    snprintf(g_sd, sizeof g_sd, "%s", sd ? sd : "."); snprintf(g_sys, sizeof g_sys, "%s", sys ? sys : "./_sys");
+    char rp[PATH_MAX], exe_abs[PATH_MAX];
+    if (sd && realpath(sd, rp)) snprintf(g_sd, sizeof g_sd, "%s", rp); else snprintf(g_sd, sizeof g_sd, "%s", sd ? sd : ".");
+    snprintf(g_sys, sizeof g_sys, "%s", sys ? sys : "./_sys");
+    if (g_sys[0] != '/' && getcwd(rp, sizeof rp)) { char t[PATH_MAX + 600]; snprintf(t, sizeof t, "%s/%s", rp, g_sys); snprintf(g_sys, sizeof g_sys, "%s", t); }
+    if (realpath(exe, exe_abs)) exe = exe_abs;
     hle_running = 0;
     gm_init();
     api_reset(); pe_reset();
     cpu_reset();
     api_kernel_init();
     kern_init();
-    api_crt_init(); fs_init_api(); win_init_api(); gdi_init_api(); gx_init_api(); audio_init_api(); api_misc_init();
+    api_crt_init(); fs_init_api(); win_init_api(); gdi_init_api(); gx_init_api(); audio_init_api(); api_misc_init(); api_user_init();
     fs_set_roots(g_sd, g_sys);
     snprintf(fs_cwd, sizeof fs_cwd, "\\");
     Module *m = pe_load_exe(exe, err, errlen);

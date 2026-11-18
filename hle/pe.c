@@ -174,7 +174,6 @@ static Module *load_image(const char *path, const char *name, int is_main, char 
     snprintf(m->name, sizeof m->name, "%s", name); snprintf(m->path, sizeof m->path, "%s", path);
     m->base = at; m->size = size; m->machine = machine; m->is_dll = (chars & 0x2000) != 0 && !is_main;
     m->entry = entry ? at + entry : 0;
-    if (machine == 0x1C2 && m->entry) m->entry |= 1;           /* THUMB image: entry is Thumb code */
     m->export_va = le32(opt + 96); m->export_size = le32(opt + 100);
     m->rsrc_va = le32(opt + 96 + 2 * 8); m->rsrc_size = le32(opt + 96 + 2 * 8 + 4);
     m->refs = 1;
@@ -229,7 +228,6 @@ uint32_t pe_proc(Module *m, const char *name, int ordinal) {
     uint32_t rva = r32(fun + 4 * idx);
     if (!rva) return 0;
     uint32_t a = m->base + rva;
-    if (m->machine == 0x1C2) a |= 1;
     return a;
 }
 

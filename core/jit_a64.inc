@@ -1286,6 +1286,10 @@ static int cpu_run_jit(int cycles) {
                 if (cpu.r[15] != pc || cpu.halted) { cpu.budget -= 1; continue; }
             }
         }
+        else if (cpu.hle_hook && (pc & 0xFFFF0000u) == 0xF0000000u) {   /* CE kernel call slots */
+            cpu.hle_hook(pc);
+            if (cpu.r[15] != pc || cpu.halted) { cpu.budget -= 1; continue; }
+        }
         if (!(pc - pf_lo < pf_hi - pf_lo)) {
             int thumb = (cpu.cpsr & T_BIT) != 0, priv = is_priv();
             void *code = jit_find(pc, thumb, priv);

@@ -68,7 +68,7 @@ static void unimpl_stub(void) {
     uint32_t i = (cpu.r[15] - TRAP_BASE) >> 2;
     Trap *t = &traps[i];
     if (t->hits < 3) hle_log("UNIMPLEMENTED %s(%08x,%08x,%08x,%08x) from %08x", t->name, cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3], cpu.r[14]);
-    cpu.r[0] = 0;
+    cpu.r[0] = strstr(t->name, "!#") ? 1 : 0;   /* ordinal-only shell/commctrl calls: pretend success */
 }
 
 static void ret_sentinel(void);
@@ -88,7 +88,14 @@ void api_return(void) {
     cpu.r[15] = lr & ~1u;
 }
 
+extern void psl_call(uint32_t slot);
 void api_hook(uint32_t pc) {
+    if (pc >= 0xF0000000u) {   /* CE kernel call slot: 0xF0010000 - 4 * (apiset << 8 | method) */
+        api_flow_changed = 0; uint32_t lr = cpu.r[14];
+        psl_call((0xF0010000u - (pc & ~3u)) >> 2);
+        if (!api_flow_changed) { cpu.cpsr = (cpu.cpsr & ~0x20u) | ((lr & 1) << 5); cpu.r[15] = lr & ~1u; }
+        return;
+    }
     uint32_t i = (pc - TRAP_BASE) >> 2;
     if (i >= (uint32_t)ntraps) return;
     Trap *t = &traps[i];

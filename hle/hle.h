@@ -129,6 +129,7 @@ extern uint32_t audio_rate;
 void api_kernel_init(void);
 void api_crt_init(void);
 void api_misc_init(void);
+void api_user_init(void);
 /* printf engine shared by sprintf/wsprintf/etc */
 typedef uint32_t (*ArgFn)(void *ctx, int is64);
 int  hle_format(char *out, int outmax, const char *fmt, int wide_fmt, uint32_t va, int va_is_ptr, int first_arg);
