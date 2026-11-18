@@ -230,6 +230,15 @@ static void api_Sleep(void) {
     running->wake = vcycles + (uint64_t)ms * cyc_per_ms();
     block_current();
 }
+/* Called by eglSwapBuffers: block the calling thread until the next 1/60 s display refresh (vsync). */
+void kern_vsync(void) {
+    if (!running) return;
+    uint64_t frame = cpu_hz / 60;
+    running->state = T_WAIT; running->wait_n = 0; running->wait_cs = 0;
+    running->wake = (vcycles / frame + 1) * frame;
+    cpu.r[0] = 1;
+    block_current();
+}
 static void api_SleepTillTick(void) { running->state = T_WAIT; running->wait_n = 0; running->wait_cs = 0; running->wake = vcycles + cyc_per_ms(); block_current(); }
 
 /* ---------------------------------------------------------------- sync objects */
@@ -360,13 +369,15 @@ static void api_GetLastError(void) { R(running ? running->last_error : 0); }
 static void api_SetLastError(void) { if (running) running->last_error = A(0); }
 
 /* ---------------------------------------------------------------- time */
-static void api_GetTickCount(void) { R(tick_ms()); }
+/* Games often spin on the clock; make each read cost a little virtual time so those waits finish in few instructions. */
+static void api_GetTickCount(void) { vcycles += 4000; R(tick_ms()); }
 static void api_QueryPerformanceFrequency(void) { w32(A(0), 1000000); w32(A(0) + 4, 0); R(1); }
 static void api_QueryPerformanceCounter(void) {
+    vcycles += 2000;
     uint64_t us = vcycles / (cpu_hz / 1000000);
     w32(A(0), (uint32_t)us); w32(A(0) + 4, (uint32_t)(us >> 32)); R(1);
 }
-static void api_timeGetTime(void) { R(tick_ms()); }
+static void api_timeGetTime(void) { vcycles += 4000; R(tick_ms()); }
 
 static void fill_systemtime(uint32_t a, struct tm *tm, int ms) {
     w16(a, tm->tm_year + 1900); w16(a + 2, tm->tm_mon + 1); w16(a + 4, tm->tm_wday); w16(a + 6, tm->tm_mday);

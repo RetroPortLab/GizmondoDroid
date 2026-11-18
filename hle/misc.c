@@ -141,12 +141,28 @@ static void api_sscanf(void) {
     for (const char *f = fm; *f; f++) {
         if (isspace((unsigned char)*f)) { while (isspace((unsigned char)*s)) s++; continue; }
         if (*f != '%') { if (*s != *f) break; s++; continue; }
-        f++; int lng = 0, wid = 0; while (isdigit((unsigned char)*f)) wid = wid * 10 + *f++ - '0';
+        f++; int skip = 0; if (*f == '*') { skip = 1; f++; }
+        int lng = 0, wid = 0; while (isdigit((unsigned char)*f)) wid = wid * 10 + *f++ - '0';
         if (*f == 'l' || *f == 'h') { lng = *f == 'l'; f++; }
         if (*f == '%') { if (*s != '%') break; s++; continue; }
         if (*f != 'c') while (isspace((unsigned char)*s)) s++;
         if (!*s && *f != 'n') break;
-        uint32_t dst = A(idx); char *e;
+        uint32_t dst = skip ? 0 : A(idx); char *e;
+        if (*f == '[') {
+            const char *q = f + 1; int neg = 0; if (*q == '^') { neg = 1; q++; }
+            char set[256] = {0}; int first = 1;
+            while (*q && (*q != ']' || first)) {
+                if (q[1] == '-' && q[2] && q[2] != ']') { for (int c = (unsigned char)q[0]; c <= (unsigned char)q[2]; c++) set[c] = 1; q += 3; }
+                else set[(unsigned char)*q++] = 1;
+                first = 0;
+            }
+            f = q; int k = 0;
+            while (*s && (set[(unsigned char)*s] != 0) != neg && (!wid || k < wid)) { if (!skip) w8(dst + (uint32_t)k, (uint8_t)*s); k++; s++; }
+            if (!k) goto out;
+            if (!skip) { w8(dst + (uint32_t)k, 0); idx++; done++; }
+            continue;
+        }
+        if (skip) { if (*f == 's') { while (*s && !isspace((unsigned char)*s)) s++; } else if (*f == 'd' || *f == 'i' || *f == 'u') { strtol(s, &e, 10); s = e; } else if (*f == 'f') { strtod(s, &e); s = e; } continue; }
         switch (*f) {
         case 'd': case 'i': { long v = strtol(s, &e, *f == 'i' ? 0 : 10); if (e == s) goto out; w32(dst, (uint32_t)v); s = e; idx++; done++; break; }
         case 'u': { unsigned long v = strtoul(s, &e, 10); if (e == s) goto out; w32(dst, (uint32_t)v); s = e; idx++; done++; break; }
@@ -159,6 +175,7 @@ static void api_sscanf(void) {
         }
     }
 out:
+    if (hle_verbose) hle_log("sscanf fmt='%s' in='%.60s' -> %d", fm, in, done);
     R((uint32_t)done);
 }
 

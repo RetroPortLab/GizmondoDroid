@@ -47,7 +47,8 @@ static void e_ChooseConfig(void) { if (A(2) && A(3) > 0) w32(A(2), 1); if (A(4))
 static void e_CreateWindowSurface(void) { R(2); }
 static void e_CreateContext(void) { R(3); }
 static void e_MakeCurrent(void) { R(1); }
-static void e_SwapBuffers(void) { frame_dirty = 1; R(1); }
+extern void kern_vsync(void);
+static void e_SwapBuffers(void) { frame_dirty = 1; R(1); kern_vsync(); }
 
 /* ---------------------------------------------------------------- state */
 static void g_MatrixMode(void) { uint32_t m = A(0); mode_idx = m == 0x1701 ? 1 : m == 0x1702 ? 2 : 0; }
@@ -169,19 +170,21 @@ static void dxt_decode(uint32_t src, int w, int h, int kind, uint32_t *out, int 
         }
     }
 }
-static void tex_store(Tex *t, int w, int h, uint32_t *px, int alpha) { free(t->px); t->px = px; t->w = w; t->h = h; t->alpha = alpha; }
+static void tex_store(Tex *t, int w, int h, uint32_t *px, int alpha) {
+    if (getenv("GIZ_GLDUMP")) { int blk = 0; for (int i = 0; i < w * h; i++) if (px[i] == 0xFF000000u) blk++; if (blk > w * h / 2) hle_log("texture %d %dx%d is %d%% opaque black", (int)(t - (Tex *)0), w, h, blk * 100 / (w * h)); } free(t->px); t->px = px; t->w = w; t->h = h; t->alpha = alpha; }
 static void g_TexImage2D(void) {
     if (getenv("GIZ_GLLOG")) hle_log("glTexImage2D lvl=%d ifmt=%x %dx%d fmt=%x type=%x tex=%d", (int)A(1), A(2), (int)A(3), (int)A(4), A(6), A(7), bound[cur_unit]);
     int level = (int)A(1), w = (int)A(3), h = (int)A(4); uint32_t fmt = A(6), ty = A(7), src = A(8);
     Tex *t = tex_get(bound[cur_unit], 0);
     if (!t || level != 0 || w <= 0 || h <= 0 || w > 2048 || h > 2048) return;
     uint32_t *px = calloc((size_t)w * h, 4);
-    int alpha = fmt == 0x1908 || fmt == 0x1906 || fmt == 0x190A;
+    int alpha = fmt == 0x1908 || fmt == 0x80E1 || fmt == 0x1906 || fmt == 0x190A;
     if (src) for (int i = 0; i < w * h; i++) {
         uint32_t c = 0xFF000000;
         if (ty == 0x1401) {
             switch (fmt) {
             case 0x1908: c = pack(r8(src + 4 * i), r8(src + 4 * i + 1), r8(src + 4 * i + 2), r8(src + 4 * i + 3)); break;
+            case 0x80E1: c = pack(r8(src + 4 * i + 2), r8(src + 4 * i + 1), r8(src + 4 * i), r8(src + 4 * i + 3)); break;
             case 0x1907: c = pack(r8(src + 3 * i), r8(src + 3 * i + 1), r8(src + 3 * i + 2), 255); break;
             case 0x1909: { int l = r8(src + i); c = pack(l, l, l, 255); } break;
             case 0x190A: { int l = r8(src + 2 * i); c = pack(l, l, l, r8(src + 2 * i + 1)); } break;
@@ -214,6 +217,7 @@ static void g_CompressedTexImage2D(void) {
             }
         }
         alpha = kind == 1 || kind == 3 || kind == 4;
+        if (getenv("GIZ_GLDUMP") && w == 16) { hle_log("pal4 tex%d level=%d size=%u: pal0=%08x pal1=%08x pal2=%08x pal15=%08x idx0..7=%02x%02x%02x%02x%02x%02x%02x%02x", bound[cur_unit], (int)A(1), A(6), pal[0], pal[1], pal[2], pal[15], r8(src+n*psz), r8(src+n*psz+1), r8(src+n*psz+2), r8(src+n*psz+3), r8(src+n*psz+4), r8(src+n*psz+5), r8(src+n*psz+6), r8(src+n*psz+7)); }
         uint32_t idx = src + n * psz;
         for (int i = 0; i < w * h; i++) {
             int v = eight ? r8(idx + i) : ((r8(idx + i / 2) >> ((i & 1) ? 0 : 4)) & 15);
@@ -315,63 +319,96 @@ static void raster(const SV *a, const SV *b, const SV *c) {
     if (tex && !tex->px) tex = NULL;
     uint16_t *fb = fb_host();
     if (!fb) return;
+    /* attribute planes: f(x,y) = f0 + gx*(x-a.x) + gy*(y-a.y) */
+    enum { N_Z, N_IW, N_U, N_V, N_R, N_G, N_B, N_A, N_F, NATT };
+    float f0[NATT] = { a->z, a->iw, a->uw, a->vw, a->r, a->g, a->b, a->a, a->fog };
+    float f1[NATT] = { b->z, b->iw, b->uw, b->vw, b->r, b->g, b->b, b->a, b->fog };
+    float f2[NATT] = { c->z, c->iw, c->uw, c->vw, c->r, c->g, c->b, c->a, c->fog };
+    float gx[NATT], gy[NATT];
+    float bax = b->x - a->x, bay = b->y - a->y, cax = c->x - a->x, cay = c->y - a->y;
+    for (int k = 0; k < NATT; k++) {
+        float d1 = f1[k] - f0[k], d2 = f2[k] - f0[k];
+        gx[k] = (d1 * cay - d2 * bay) * inv;
+        gy[k] = (d2 * bax - d1 * cax) * inv;
+    }
+    /* barycentric l_i(px,py) = li0 + lix*px + liy*py, used only for the coverage span */
+    float L[3][3];   /* {const, dx, dy} */
+    {
+        const SV *v[3] = { a, b, c };
+        for (int i = 0; i < 3; i++) {
+            const SV *p = v[(i + 1) % 3], *q = v[(i + 2) % 3];   /* edge opposite vertex i */
+            float dx = (p->y - q->y) * inv, dy = (q->x - p->x) * inv;
+            L[i][1] = dx; L[i][2] = dy; L[i][0] = (p->x * q->y - q->x * p->y) * inv;
+        }
+    }
+    int pm_s = tex ? tex->w : 0, pm_t = tex ? tex->h : 0;
+    int pow2 = tex && !(pm_s & (pm_s - 1)) && !(pm_t & (pm_t - 1));
     for (int y = y0; y <= y1; y++) {
         float py = y + 0.5f;
-        for (int x = x0; x <= x1; x++) {
-            float px = x + 0.5f;
-            float l0 = ((b->x - px) * (c->y - py) - (c->x - px) * (b->y - py)) * inv;
-            float l1 = ((c->x - px) * (a->y - py) - (a->x - px) * (c->y - py)) * inv;
-            float l2 = 1 - l0 - l1;
-            if (l0 < 0 || l1 < 0 || l2 < 0) continue;
-            float z = l0 * a->z + l1 * b->z + l2 * c->z;
-            if (z < 0 || z > 1) continue;
-            int pi = y * SCREEN_W + x;
-            if (en_depth && !zpass(z, zbuf[pi])) continue;
-            float r = l0 * a->r + l1 * b->r + l2 * c->r, g = l0 * a->g + l1 * b->g + l2 * c->g;
-            float bl = l0 * a->b + l1 * b->b + l2 * c->b, al = l0 * a->a + l1 * b->a + l2 * c->a;
-            if (tex) {
-                float iw = l0 * a->iw + l1 * b->iw + l2 * c->iw, w = 1.0f / iw;
-                float u = (l0 * a->uw + l1 * b->uw + l2 * c->uw) * w, v = (l0 * a->vw + l1 * b->vw + l2 * c->vw) * w;
-                float fu = u * tex->w - 0.5f, fv = v * tex->h - 0.5f;
-                float tr, tg, tb, ta_;
-                if (tex->magl) {
-                    int ix = (int)floorf(fu), iy = (int)floorf(fv); float fx_ = fu - ix, fy = fv - iy;
-                    uint32_t p00 = texel(tex, ix, iy), p10 = texel(tex, ix + 1, iy), p01 = texel(tex, ix, iy + 1), p11 = texel(tex, ix + 1, iy + 1);
-                    float w00 = (1 - fx_) * (1 - fy), w10 = fx_ * (1 - fy), w01 = (1 - fx_) * fy, w11 = fx_ * fy;
-#define CH(sh) ((((p00 >> sh) & 255) * w00 + ((p10 >> sh) & 255) * w10 + ((p01 >> sh) & 255) * w01 + ((p11 >> sh) & 255) * w11) / 255.0f)
-                    tr = CH(16); tg = CH(8); tb = CH(0); ta_ = CH(24);
+        float lo = (float)x0 + 0.5f, hi = (float)x1 + 0.5f;
+        int empty = 0;
+        for (int i = 0; i < 3; i++) {
+            float A0 = L[i][0] + L[i][2] * py, B = L[i][1];
+            if (B > 1e-12f) { float t = -A0 / B; if (t > lo) lo = t; }
+            else if (B < -1e-12f) { float t = -A0 / B; if (t < hi) hi = t; }
+            else if (A0 < 0) { empty = 1; break; }
+        }
+        if (empty) continue;
+        int xs = (int)ceilf(lo - 0.5f), xe = (int)floorf(hi - 0.5f);
+        if (xs < x0) xs = x0; if (xe > x1) xe = x1;
+        if (xs > xe) continue;
+        float dy_ = py - a->y, dx_ = (xs + 0.5f) - a->x, v[NATT];
+        for (int k = 0; k < NATT; k++) v[k] = f0[k] + gx[k] * dx_ + gy[k] * dy_;
+        int pi = y * SCREEN_W + xs;
+        for (int x = xs; x <= xe; x++, pi++) {
+            float z = v[N_Z];
+            if (z >= 0 && z <= 1 && (!en_depth || zpass(z, zbuf[pi]))) {
+                float r = v[N_R], g = v[N_G], bl = v[N_B], al = v[N_A];
+                int keep = 1;
+                if (tex) {
+                    float w = 1.0f / v[N_IW];
+                    float fu = v[N_U] * w * tex->w, fv = v[N_V] * w * tex->h;
+                    float tr, tg, tb, ta_;
+                    if (tex->magl) {
+                        fu -= 0.5f; fv -= 0.5f;
+                        int ix = (int)floorf(fu), iy = (int)floorf(fv); float fx_ = fu - ix, fy = fv - iy;
+                        uint32_t p00 = texel(tex, ix, iy), p10 = texel(tex, ix + 1, iy), p01 = texel(tex, ix, iy + 1), p11 = texel(tex, ix + 1, iy + 1);
+                        float w00 = (1 - fx_) * (1 - fy), w10 = fx_ * (1 - fy), w01 = (1 - fx_) * fy, w11 = fx_ * fy;
+#define CH(sh) ((((p00 >> sh) & 255) * w00 + ((p10 >> sh) & 255) * w10 + ((p01 >> sh) & 255) * w01 + ((p11 >> sh) & 255) * w11) * (1.0f / 255.0f))
+                        tr = CH(16); tg = CH(8); tb = CH(0); ta_ = CH(24);
 #undef CH
-                } else {
-                    uint32_t p = texel(tex, (int)floorf(fu + 0.5f), (int)floorf(fv + 0.5f));
-                    tr = ((p >> 16) & 255) / 255.0f; tg = ((p >> 8) & 255) / 255.0f; tb = (p & 255) / 255.0f; ta_ = (p >> 24) / 255.0f;
+                    } else {
+                        int ix = (int)fu, iy = (int)fv; if (fu < 0) ix = (int)floorf(fu); if (fv < 0) iy = (int)floorf(fv);
+                        uint32_t p;
+                        if (pow2 && tex->wraps == 0x2901 && tex->wrapt == 0x2901) p = tex->px[(iy & (pm_t - 1)) * pm_s + (ix & (pm_s - 1))];
+                        else p = texel(tex, ix, iy);
+                        tr = ((p >> 16) & 255) * (1.0f / 255.0f); tg = ((p >> 8) & 255) * (1.0f / 255.0f); tb = (p & 255) * (1.0f / 255.0f); ta_ = (p >> 24) * (1.0f / 255.0f);
+                    }
+                    r *= tr; g *= tg; bl *= tb; al *= ta_;
                 }
-                r *= tr; g *= tg; bl *= tb; al *= ta_;
-            }
-            if (en_alpha) {
-                int ok;
-                switch (alpha_func) {
-                case 0x200: ok = 0; break; case 0x201: ok = al < alpha_ref; break; case 0x202: ok = al == alpha_ref; break;
-                case 0x203: ok = al <= alpha_ref; break; case 0x204: ok = al > alpha_ref; break; case 0x205: ok = al != alpha_ref; break;
-                case 0x206: ok = al >= alpha_ref; break; default: ok = 1;
+                if (en_alpha) {
+                    switch (alpha_func) {
+                    case 0x200: keep = 0; break; case 0x201: keep = al < alpha_ref; break; case 0x202: keep = al == alpha_ref; break;
+                    case 0x203: keep = al <= alpha_ref; break; case 0x204: keep = al > alpha_ref; break; case 0x205: keep = al != alpha_ref; break;
+                    case 0x206: keep = al >= alpha_ref; break; default: keep = 1;
+                    }
                 }
-                if (!ok) continue;
+                if (keep) {
+                    if (en_fog) { float f = v[N_F]; r = r * f + fog_col[0] * (1 - f); g = g * f + fog_col[1] * (1 - f); bl = bl * f + fog_col[2] * (1 - f); }
+                    if (en_blend && !(blend_s == 1 && blend_d == 0)) {
+                        uint16_t d = fb[pi];
+                        float dr = (d >> 11) * (1.0f / 31.0f), dg = ((d >> 5) & 63) * (1.0f / 63.0f), db = (d & 31) * (1.0f / 31.0f);
+                        float sr = bfac(blend_s, r, al, dr, 1, 1), sg = bfac(blend_s, g, al, dg, 1, 1), sb = bfac(blend_s, bl, al, db, 1, 1);
+                        float tr2 = bfac(blend_d, r, al, dr, 1, 0), tg2 = bfac(blend_d, g, al, dg, 1, 0), tb2 = bfac(blend_d, bl, al, db, 1, 0);
+                        r = r * sr + dr * tr2; g = g * sg + dg * tg2; bl = bl * sb + db * tb2;
+                    }
+                    int ir = (int)(r * 31.0f + 0.5f), ig = (int)(g * 63.0f + 0.5f), ib = (int)(bl * 31.0f + 0.5f);
+                    ir = ir < 0 ? 0 : ir > 31 ? 31 : ir; ig = ig < 0 ? 0 : ig > 63 ? 63 : ig; ib = ib < 0 ? 0 : ib > 31 ? 31 : ib;
+                    fb[pi] = (uint16_t)(ir << 11 | ig << 5 | ib);
+                    if (depth_mask) zbuf[pi] = z;
+                }
             }
-            if (en_fog) {
-                float f = l0 * a->fog + l1 * b->fog + l2 * c->fog;
-                r = r * f + fog_col[0] * (1 - f); g = g * f + fog_col[1] * (1 - f); bl = bl * f + fog_col[2] * (1 - f);
-            }
-            if (en_blend) {
-                uint16_t d = fb[pi];
-                float dr = (d >> 11) / 31.0f, dg = ((d >> 5) & 63) / 63.0f, db = (d & 31) / 31.0f;
-                float sr = bfac(blend_s, r, al, dr, 1, 1), sg = bfac(blend_s, g, al, dg, 1, 1), sb = bfac(blend_s, bl, al, db, 1, 1);
-                float tr2 = bfac(blend_d, r, al, dr, 1, 0), tg2 = bfac(blend_d, g, al, dg, 1, 0), tb2 = bfac(blend_d, bl, al, db, 1, 0);
-                r = r * sr + dr * tr2; g = g * sg + dg * tg2; bl = bl * sb + db * tb2;
-            }
-            int ir = (int)(r * 31.0f + 0.5f), ig = (int)(g * 63.0f + 0.5f), ib = (int)(bl * 31.0f + 0.5f);
-            ir = ir < 0 ? 0 : ir > 31 ? 31 : ir; ig = ig < 0 ? 0 : ig > 63 ? 63 : ig; ib = ib < 0 ? 0 : ib > 31 ? 31 : ib;
-            fb[pi] = (uint16_t)(ir << 11 | ig << 5 | ib);
-            if (depth_mask && en_depth) zbuf[pi] = z;
-            else if (depth_mask) zbuf[pi] = z;
+            for (int k = 0; k < NATT; k++) v[k] += gx[k];
         }
     }
 }

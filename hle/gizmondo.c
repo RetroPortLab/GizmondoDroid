@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <unistd.h>
+#include <strings.h>
 
 extern void (*hle_log_sink)(const char *line);
 static char g_sd[512], g_sys[512];
@@ -13,6 +14,7 @@ static uint32_t frames_run;
 void giz_set_log(void (*sink)(const char *)) { hle_log_sink = sink; }
 void giz_set_audio_rate(uint32_t hz) { audio_rate = hz ? hz : 44100; }
 
+static void alias_load(const char *exe);
 int giz_launch(const char *exe, const char *sd, const char *sys, const char *args, char *err, int errlen) {
     char dummy[8]; if (!err) { err = dummy; errlen = sizeof dummy; }
     err[0] = 0;
@@ -23,6 +25,7 @@ int giz_launch(const char *exe, const char *sd, const char *sys, const char *arg
     if (realpath(exe, exe_abs)) exe = exe_abs;
     hle_running = 0;
     gm_init();
+    alias_load(exe);
     api_reset(); pe_reset();
     cpu_reset();
     api_kernel_init();
@@ -54,7 +57,37 @@ void giz_frame(void) {
 const uint16_t *giz_screen(void) { return fb_host(); }
 int giz_running(void) { return hle_running || hle_exec_pending; }
 int giz_exit_code(void) { return hle_exit_code; }
-void giz_key(int vk, int down) { input_key(vk, down); }
+/* Key aliases: some games ignore the GAPI buttons and listen for ordinary keys instead. A profile can map each
+ * Gizmondo button to up to two virtual keys. Built-in profiles exist for known games; a file named
+ * gizmondodroid-keys.txt in the game's folder (lines like "A=0x0D,0x11") overrides them. */
+static int g_alias[256][2];
+static int key_vk_by_name(const char *n) {
+    static const struct { const char *n; int vk; } t[] = { {"UP",0x26},{"DOWN",0x28},{"LEFT",0x25},{"RIGHT",0x27},{"A",0xC1},{"B",0xC2},{"C",0xC3},{"START",0x0D} };
+    for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) if (!strcasecmp(n, t[i].n)) return t[i].vk;
+    return -1;
+}
+static void alias_reset(void) { for (int i = 0; i < 256; i++) { g_alias[i][0] = i; g_alias[i][1] = 0; } }
+static void alias_set(int from, int a, int b) { if (from >= 0 && from < 256) { g_alias[from][0] = a; g_alias[from][1] = b; } }
+static void alias_load(const char *exe) {
+    alias_reset();
+    const char *base = strrchr(exe, '/'); base = base ? base + 1 : exe;
+    if (!strcasecmp(base, "carmageddon.exe")) { alias_set(0xC1, 0x0D, 0); alias_set(0xC2, 0x20, 0); alias_set(0xC3, 0x1B, 0); }
+    char path[PATH_MAX + 64]; snprintf(path, sizeof path, "%s/gizmondodroid-keys.txt", g_sd);
+    FILE *f = fopen(path, "r"); if (!f) return;
+    char line[160];
+    while (fgets(line, sizeof line, f)) {
+        char *eq = strchr(line, '='); if (!eq) continue; *eq = 0;
+        char nm[32]; if (sscanf(line, " %31s", nm) != 1) continue;
+        int from = key_vk_by_name(nm); unsigned a = 0, b = 0;
+        int n = sscanf(eq + 1, " %i , %i", &a, &b);
+        if (from >= 0 && n >= 1) alias_set(from, (int)a, n >= 2 ? (int)b : 0);
+    }
+    fclose(f);
+}
+void giz_key(int vk, int down) {
+    if (vk < 0 || vk > 255) return;
+    for (int i = 0; i < 2; i++) if (g_alias[vk][i]) input_key(g_alias[vk][i], down);
+}
 void giz_touch(int x, int y, int down) { input_touch(x, y, down); }
 int giz_audio_read(int16_t *o, int n) { return audio_read(o, n); }
 void giz_stop(void) { hle_running = 0; hle_exec_pending = 0; }
