@@ -98,6 +98,9 @@ static void api___itos(void) { R_float((float)(int32_t)A(0)); }
 static void api___utos(void) { R_float((float)A(0)); }
 static void api___dtos(void) { R_float((float)D_arg(0)); }
 static void api___stod(void) { R_double((double)F_arg(0)); }
+static void api___stoi64(void) { R64((uint64_t)(int64_t)F_arg(0)); }
+static void api___stou64(void) { R64((uint64_t)F_arg(0)); }
+static void api___i64tos(void) { R_float((float)(int64_t)(cpu.r[0] | ((uint64_t)cpu.r[1] << 32))); }
 
 #define E(n, f) { n, f }
 static const ApiDef udefs[] = {
@@ -111,6 +114,6 @@ static const ApiDef udefs[] = {
     E("_getstdfilex", api_getstdfilex), E("_isctype", api_isctype), E("iswctype", api_isctype), E("_wfreopen", api_zero), E("ExtEscape", api_ExtEscape),
     E("__adds", api___adds), E("__subs", api___subs), E("__muls", api___muls), E("__divs", api___divs), E("__negs", api___negs),
     E("__eqs", api___eqs), E("__nes", api___nes), E("__lts", api___lts), E("__les", api___les), E("__gts", api___gts), E("__ges", api___ges),
-    E("__stoi", api___stoi), E("__stou", api___stou), E("__itos", api___itos), E("__utos", api___utos), E("__dtos", api___dtos), E("__stod", api___stod),
+    E("__stoi", api___stoi), E("__stou", api___stou), E("__itos", api___itos), E("__utos", api___utos), E("__dtos", api___dtos), E("__stod", api___stod), E("__stoi64", api___stoi64), E("__stou64", api___stou64), E("__i64tos", api___i64tos),
 };
 void api_user_init(void) { nres = 0; memset(std_handles, 0, sizeof std_handles); api_register(udefs, sizeof udefs / sizeof udefs[0]); }

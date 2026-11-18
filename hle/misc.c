@@ -174,7 +174,10 @@ static void api_GetSystemPowerStatusEx(void) {
 static void api_GetStartupInfo(void) { for (int i = 0; i < 17; i++) w32(A(0) + 4 * i, 0); w32(A(0), 68); }
 static void api_FormatMessageW(void) { R(0); }
 static void api_timeBeginPeriod(void) { R(0); }
-static void api_DeviceIoControl(void) { R(0); }
+static void api_RequestPowerNotifications(void) { R(h_new(H_MISC, calloc(1, 8))); }
+static void api_OpenEventW(void) { R(0); kern_set_error(2); }
+static void api_waveOutGetDevCaps(void) { if (A(1)) for (uint32_t i = 0; i < A(2) && i < 256; i++) w8(A(1) + i, 0); R(0); }
+static void api_DeviceIoControl(void) { if (hle_verbose) hle_log("DeviceIoControl code=%08x in=%u out=%u", A(1), A(3), A(5)); if (A(4) && A(5) < 0x10000) for (uint32_t i = 0; i < A(5); i++) w8(A(4) + i, 0); R(1); }
 static void api_SHGetSpecialFolderPathW(void) {
     const char *p = A(1) == 5 ? "\\My Documents" : A(1) == 2 ? "\\Windows\\Programs" : "\\Windows";
     gw_write(A(2), p, 260); R(1);
@@ -194,7 +197,7 @@ static const ApiDef mdefs[] = {
     E("CoInitializeEx", api_zero), E("CoInitialize", api_zero), E("CoUninitialize", api_zero), E("CoCreateInstance", api_CoCreateInstance), E("CoTaskMemAlloc", api_zero),
     E("OleInitialize", api_zero), E("OleUninitialize", api_zero), E("InitCommonControlsEx", api_one), E("InitCommonControls", api_zero), E("SHInitDialog", api_one),
     E("GetSystemPowerStatusEx", api_GetSystemPowerStatusEx), E("GetSystemPowerStatusEx2", api_GetSystemPowerStatusEx), E("GetStartupInfo", api_GetStartupInfo),
-    E("FormatMessageW", api_FormatMessageW), E("timeBeginPeriod", api_timeBeginPeriod), E("timeEndPeriod", api_timeBeginPeriod), E("DeviceIoControl", api_DeviceIoControl),
+    E("FormatMessageW", api_FormatMessageW), E("timeBeginPeriod", api_timeBeginPeriod), E("timeEndPeriod", api_timeBeginPeriod), E("DeviceIoControl", api_DeviceIoControl), E("RequestPowerNotifications", api_RequestPowerNotifications), E("OpenEventW", api_OpenEventW), E("waveOutGetDevCaps", api_waveOutGetDevCaps),
     E("SHGetSpecialFolderPathW", api_SHGetSpecialFolderPathW), E("SetPowerRequirement", api_zero), E("ReleasePowerRequirement", api_zero), E("SetSystemPowerState", api_zero),
     E("PowerPolicyNotify", api_zero), E("ShellExecuteEx", api_zero), E("GetOpenFileNameW", api_zero), E("GetSaveFileNameW", api_zero), E("WSAStartup", api_E_FAIL), E("IsProcessorFeaturePresent", api_zero),
     E("EnableHardwareKeyboard", api_zero), E("GetKeyboardType", api_zero), E("Beep", api_one), E("SetThreadLocale", api_one),

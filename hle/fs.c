@@ -17,6 +17,8 @@ void fs_set_roots(const char *sdcard, const char *sysroot) {
     snprintf(root_sd, sizeof root_sd, "%s", sdcard && *sdcard ? sdcard : ".");
     snprintf(root_sys, sizeof root_sys, "%s", sysroot && *sysroot ? sysroot : ".");
     mkdir(root_sys, 0777);
+    static const char *const dirs[] = { "Windows", "My Documents", "Program Files", "Temp", "Flash Disk", "Flash Disk/MyGames", "Application Data", NULL };
+    for (int i = 0; dirs[i]; i++) { char d[1200]; snprintf(d, sizeof d, "%s/%s", root_sys, dirs[i]); mkdir(d, 0777); }
 }
 
 /* case-insensitive resolve of one path component inside dir; returns 1 if found */
@@ -97,6 +99,8 @@ static int map_wide(uint32_t gp, char *out, int create) {
 static void api_CreateFileW(void) {
     char h[600]; uint32_t acc = A(1), disp = A(4);
     int create = (acc & 0x40000000) != 0;
+    if (hle_verbose) { char g[300]; gw_read(A(0), g, sizeof g); hle_log("CreateFileW \"%s\" acc=%x disp=%u", g, acc, disp); }
+    { char g[300]; gw_read(A(0), g, sizeof g); int n = (int)strlen(g); if (n >= 4 && !strcasecmp(g + n - 4, "Vol:")) { R(h_new(H_MISC, calloc(1, 8))); return; } }
     if (!map_wide(A(0), h, create)) { R(0xFFFFFFFF); kern_set_error(3); return; }
     int fl = (acc & 0x40000000) ? ((acc & 0x80000000) ? O_RDWR : O_WRONLY) : O_RDONLY;
     struct stat st; int exists = !stat(h, &st);
@@ -170,9 +174,15 @@ static void api_CopyFileW(void) {
     while ((r = read(i, buf, sizeof buf)) > 0) if (write(o, buf, (size_t)r) != r) break;
     close(i); close(o); R(1);
 }
-static void api_CreateDirectoryW(void) { char h[600]; if (!map_wide(A(0), h, 0)) { R(0); return; } R(!mkdir(h, 0777)); }
+static void api_CreateDirectoryW(void) {
+    char h[600]; if (!map_wide(A(0), h, 0)) { R(0); kern_set_error(3); return; }
+    size_t n = strlen(h); while (n > 1 && h[n - 1] == '/') h[--n] = 0;
+    if (!mkdir(h, 0777)) { R(1); kern_set_error(0); return; }
+    R(0); kern_set_error(errno == EEXIST ? 183 : errno == ENOENT ? 3 : 5);
+}
 static void api_RemoveDirectoryW(void) { char h[600]; if (!map_wide(A(0), h, 0)) { R(0); return; } R(!rmdir(h)); }
 static void api_GetFileAttributesW(void) {
+    if (hle_verbose) { char g[300]; gw_read(A(0), g, sizeof g); hle_log("GetFileAttributesW \"%s\"", g); }
     char h[600]; struct stat st;
     if (!map_wide(A(0), h, 0) || stat(h, &st)) { R(0xFFFFFFFF); kern_set_error(2); return; }
     R(S_ISDIR(st.st_mode) ? 0x10 : 0x20);
@@ -239,6 +249,7 @@ static void api_UnmapViewOfFile(void) { gm_vfree(A(0)); R(1); }
 typedef struct { FILE *fp; } CFile;
 static void api_wfopen(void) {
     char g[600], m[16], h[600]; gw_read(A(0), g, sizeof g); gw_read(A(1), m, sizeof m);
+    if (hle_verbose) hle_log("_wfopen \"%s\" \"%s\"", g, m);
     if (!fs_map(g, h, sizeof h, strpbrk(m, "wa+") != NULL)) { R(0); return; }
     FILE *fp = fopen(h, m); if (!fp) { R(0); return; }
     R(h_new(H_MISC, fp));
@@ -252,16 +263,26 @@ static void api_fopen(void) {
 static FILE *cf(uint32_t h) { return h_get(h, H_MISC); }
 static void api_fclose(void) { FILE *f = cf(A(0)); if (f) fclose(f); h_close(A(0)); R(0); }
 static void api_fread(void) {
-    FILE *f = cf(A(3)); uint32_t sz = A(1), n = A(2), done = 0; uint8_t tmp[4096];
-    if (!f || !sz) { R(0); return; }
-    while (done < n) { uint32_t c = (uint32_t)(sizeof tmp / sz); if (!c) c = 1; if (c > n - done) c = n - done; size_t r = fread(tmp, sz, c, f); if (!r) break; gm_write(A(0) + done * sz, tmp, (uint32_t)(r * sz)); done += (uint32_t)r; if (r < c) break; }
-    R(done);
+    FILE *f = cf(A(3)); uint32_t sz = A(1), n = A(2); uint8_t tmp[16384];
+    if (!f || !sz || !n) { R(0); return; }
+    uint64_t want = (uint64_t)sz * n, got = 0;
+    while (got < want) {
+        size_t c = want - got > sizeof tmp ? sizeof tmp : (size_t)(want - got);
+        size_t r = fread(tmp, 1, c, f); if (!r) break;
+        gm_write(A(0) + (uint32_t)got, tmp, (uint32_t)r); got += r; if (r < c) break;
+    }
+    R((uint32_t)(got / sz));
 }
 static void api_fwrite(void) {
-    FILE *f = cf(A(3)); uint32_t sz = A(1), n = A(2), done = 0; uint8_t tmp[4096];
-    if (!f || !sz) { R(0); return; }
-    while (done < n) { uint32_t c = (uint32_t)(sizeof tmp / sz); if (!c) c = 1; if (c > n - done) c = n - done; gm_read(tmp, A(0) + done * sz, c * sz); size_t r = fwrite(tmp, sz, c, f); done += (uint32_t)r; if (r < c) break; }
-    R(done);
+    FILE *f = cf(A(3)); uint32_t sz = A(1), n = A(2); uint8_t tmp[16384];
+    if (!f || !sz || !n) { R(0); return; }
+    uint64_t want = (uint64_t)sz * n, put = 0;
+    while (put < want) {
+        size_t c = want - put > sizeof tmp ? sizeof tmp : (size_t)(want - put);
+        gm_read(tmp, A(0) + (uint32_t)put, (uint32_t)c);
+        size_t r = fwrite(tmp, 1, c, f); put += r; if (r < c) break;
+    }
+    R((uint32_t)(put / sz));
 }
 static void api_fseek(void) { FILE *f = cf(A(0)); R(f ? (uint32_t)fseek(f, (int32_t)A(1), (int)A(2)) : 0xFFFFFFFFu); }
 static void api_ftell(void) { FILE *f = cf(A(0)); R(f ? (uint32_t)ftell(f) : 0xFFFFFFFFu); }

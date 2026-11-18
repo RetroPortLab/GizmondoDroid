@@ -243,3 +243,16 @@ void gm_init(void) {
     heap_init();
     gm_map(FB_ADDR, SCREEN_W * SCREEN_H * 2 + 0x1000);
 }
+
+/* Debug: walk the heap; returns the address of the first inconsistent block, or 0. */
+uint32_t gm_heap_check(void) {
+    uint32_t a = HEAP_BASE, prev = 0;
+    while (1) {
+        if (!in_heap(a) && a != HEAP_BASE + HEAP_SIZE - 16) return a;
+        uint32_t sz = BSZ(a);
+        if (a == HEAP_BASE + HEAP_SIZE - 16) return 0;
+        if (sz < 24 || (sz & 7) || a + sz > HEAP_BASE + HEAP_SIZE) return a;
+        if (BPREV(a) != prev) return a;
+        prev = sz; a += sz;
+    }
+}

@@ -17,6 +17,8 @@ int main(int argc, char **argv) {
     struct { int frame, vk, x, y, down, touch; } ev[256]; int nev = 0, shot_every = 0;
     int a = 1;
     for (; a < argc && argv[a][0] == '-'; a++) {
+        if (!strcmp(argv[a], "-H")) { extern void hle_heapcheck(int); hle_heapcheck(1); continue; }
+        if (!strcmp(argv[a], "-v")) { extern int hle_verbose; hle_verbose = 2; continue; }
         if (!strcmp(argv[a], "-s") && a + 1 < argc) shot_every = atoi(argv[++a]);
         else if (!strcmp(argv[a], "-k") && a + 1 < argc && nev < 256) { int f, v, d; sscanf(argv[++a], "%d:%i:%d", &f, &v, &d); ev[nev].frame = f; ev[nev].vk = v; ev[nev].down = d; ev[nev].touch = 0; nev++; }
         else if (!strcmp(argv[a], "-t") && a + 1 < argc && nev < 256) { int f, x, y, d; sscanf(argv[++a], "%d:%d:%d:%d", &f, &x, &y, &d); ev[nev].frame = f; ev[nev].x = x; ev[nev].y = y; ev[nev].down = d; ev[nev].touch = 1; nev++; }

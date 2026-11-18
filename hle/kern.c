@@ -291,6 +291,13 @@ static void api_WaitForSingleObject(void) {
     do_wait(1, tmp, 0, A(1));
     gm_free(tmp);
 }
+static void api_CreateMsgQueue(void) { Event *e = calloc(1, sizeof *e); e->manual = 1; R(h_new(H_EVENT, e)); }
+static void api_ReadMsgQueue(void) {
+    uint32_t to = A(4);
+    if (A(3)) w32(A(3), 0);
+    if (to == 0xFFFFFFFFu) { uint32_t tmp = gm_alloc(4); w32(tmp, A(0)); do_wait(1, tmp, 0, to); gm_free(tmp); return; }
+    cpu.r[0] = to; api_Sleep(); R(0);
+}
 static void api_WaitForMultipleObjects(void) { do_wait(A(0), A(1), A(2) != 0, A(3)); }
 extern void fs_close_obj(int type, void *p);
 static void api_CloseHandle(void) {
@@ -560,37 +567,46 @@ static void crash(const char *why) {
     hle_exit_code = -1; hle_running = 0;
 }
 
+/* One scheduling step: wake sleepers, pick a thread, run up to one slice (or idle-skip time). Returns cycles consumed. */
+static int64_t sched_step(int64_t left) {
+    wake_check();
+    if (!running || running->state != T_RUN) {
+        Thread *n = pick_ready();
+        if (n) { running = n; n->state = T_RUN; load_ctx(n); slices_since_switch = 0; }
+        else {
+            /* idle: jump to the next wake-up */
+            uint64_t next = INF64;
+            for (int i = 0; i < nthreads; i++) if ((threads[i]->state == T_WAIT || threads[i]->state == T_MSG) && threads[i]->wake < next) next = threads[i]->wake;
+            int64_t adv = left;
+            if (next != INF64 && next > vcycles && (int64_t)(next - vcycles) < adv) adv = (int64_t)(next - vcycles);
+            if (adv < 1) adv = 1;
+            if (adv > 400000) adv = 400000;      /* keep polling input/timers */
+            vcycles += adv;
+            return adv;
+        }
+    }
+    uint32_t pc = cpu.r[15];
+    if (pc < TRAP_BASE && !gm_ptr(pc) && pc < 0xF0000000u) { crash("jump to unmapped address"); return left; }
+    int slice = left < 20000 ? (int)left : 20000;
+    int n = cpu_run(slice);
+    if (n <= 0) n = 1;
+    vcycles += n;
+    if (running && running->state == T_RUN && !cpu.halted && ++slices_since_switch >= 4) {
+        slices_since_switch = 0;
+        if (pick_ready()) { running->state = T_READY; save_ctx(running); switch_away(); }
+    }
+    return n;
+}
+
+int kern_nested_step(void) {
+    if (!running) { int n = cpu_run(20000); if (n <= 0) n = 1; vcycles += n; return n; }
+    return (int)sched_step(20000);
+}
+
 void kern_run_frame(void) {
     int64_t left = cpu_hz / 60;
     if (!hle_running) return;
-    while (left > 0 && hle_running) {
-        wake_check();
-        if (!running || running->state != T_RUN) {
-            Thread *n = pick_ready();
-            if (n) { running = n; n->state = T_RUN; load_ctx(n); slices_since_switch = 0; }
-            else {
-                /* idle: jump to the next wake-up */
-                uint64_t next = INF64;
-                for (int i = 0; i < nthreads; i++) if ((threads[i]->state == T_WAIT || threads[i]->state == T_MSG) && threads[i]->wake < next) next = threads[i]->wake;
-                int64_t adv = left;
-                if (next != INF64 && next > vcycles && (int64_t)(next - vcycles) < adv) adv = (int64_t)(next - vcycles);
-                if (adv < 1) adv = 1;
-                if (adv > 400000) adv = 400000;      /* keep polling input/timers */
-                vcycles += adv; left -= adv;
-                continue;
-            }
-        }
-        uint32_t pc = cpu.r[15];
-        if (pc < TRAP_BASE && !gm_ptr(pc)) { crash("jump to unmapped address"); break; }
-        int slice = left < 20000 ? (int)left : 20000;
-        int n = cpu_run(slice);
-        if (n <= 0) n = 1;
-        vcycles += n; left -= n;
-        if (running && running->state == T_RUN && ++slices_since_switch >= 4) {
-            slices_since_switch = 0;
-            if (pick_ready()) { running->state = T_READY; save_ctx(running); switch_away(); }
-        }
-    }
+    while (left > 0 && hle_running) left -= sched_step(left);
 }
 
 void kern_init(void) {
@@ -610,7 +626,7 @@ static const ApiDef kdefs[] = {
     E("SuspendThread", api_SuspendThread), E("ResumeThread", api_ResumeThread), E("Sleep", api_Sleep), E("SleepTillTick", api_SleepTillTick),
     E("CreateEventW", api_CreateEventW), E("EventModify", api_EventModify), E("SetEvent", api_SetEvent), E("ResetEvent", api_ResetEvent), E("PulseEvent", api_PulseEvent),
     E("CreateMutexW", api_CreateMutexW), E("ReleaseMutex", api_ReleaseMutex), E("CreateSemaphoreW", api_CreateSemaphoreW), E("ReleaseSemaphore", api_ReleaseSemaphore),
-    E("WaitForSingleObject", api_WaitForSingleObject), E("WaitForMultipleObjects", api_WaitForMultipleObjects), E("CloseHandle", api_CloseHandle),
+    E("WaitForSingleObject", api_WaitForSingleObject), E("WaitForMultipleObjects", api_WaitForMultipleObjects), E("CreateMsgQueue", api_CreateMsgQueue), E("ReadMsgQueue", api_ReadMsgQueue), E("CloseHandle", api_CloseHandle),
     E("InitializeCriticalSection", api_InitializeCriticalSection), E("DeleteCriticalSection", api_DeleteCriticalSection), E("EnterCriticalSection", api_EnterCriticalSection),
     E("LeaveCriticalSection", api_LeaveCriticalSection), E("TryEnterCriticalSection", api_TryEnterCriticalSection),
     E("InterlockedIncrement", api_InterlockedIncrement), E("InterlockedDecrement", api_InterlockedDecrement), E("InterlockedExchange", api_InterlockedExchange),

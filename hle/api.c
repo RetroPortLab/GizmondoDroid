@@ -5,12 +5,16 @@
 #include <stdarg.h>
 
 int hle_verbose;
+static int heapcheck;
+extern uint32_t gm_heap_check(void);
+void hle_heapcheck(int on) { heapcheck = on; }
 int api_flow_changed;
 static int log_count;
 void (*hle_log_sink)(const char *line);
 
 void hle_log(const char *fmt, ...) {
-    if (log_count > 4000) return;
+    static int unlimited = -1; if (unlimited < 0) unlimited = getenv("GIZ_TRACE") != NULL;
+    if (log_count > 4000 && !unlimited) return;
     char buf[512];
     va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
     log_count++;
@@ -100,8 +104,10 @@ void api_hook(uint32_t pc) {
     if (i >= (uint32_t)ntraps) return;
     Trap *t = &traps[i];
     t->hits++;
-    if (hle_verbose > 1) hle_log("call %s(%08x,%08x,%08x,%08x)", t->name, cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3]);
+    static int trace = -1; if (trace < 0) trace = getenv("GIZ_TRACE") != NULL;
+    if (trace) hle_log("call %s(%08x,%08x,%08x,%08x)", t->name, cpu.r[0], cpu.r[1], cpu.r[2], cpu.r[3]);
     api_flow_changed = 0;
+    if (heapcheck) { static const char *last; static uint32_t la[4], lpc; uint32_t bad = gm_heap_check(); if (bad) { hle_log("HEAP CORRUPT at %08x after %s(%08x,%08x,%08x,%08x) lr=%08x; now %s", bad, last ? last : "?", la[0], la[1], la[2], la[3], lpc, t->name); heapcheck = 0; } last = t->name; la[0] = cpu.r[0]; la[1] = cpu.r[1]; la[2] = cpu.r[2]; la[3] = cpu.r[3]; lpc = cpu.r[14]; }
     uint32_t lr = cpu.r[14];
     t->fn();
     if (!api_flow_changed) {
@@ -120,6 +126,7 @@ typedef struct { uint32_t r[16], n, z, c, v, cpsr; int halted; int64_t budget, r
 
 uint32_t guest_call(uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
     if (!sentinel_addr) sentinel_addr = new_trap("<return>", ret_sentinel, 0);
+    if (getenv("GIZ_GC")) hle_log("guest_call(%08x, %08x,%08x,%08x,%08x) depth=%d lr=%08x", fn, a0, a1, a2, a3, guest_depth, cpu.r[14]);
     Saved s;
     memcpy(s.r, cpu.r, sizeof s.r); s.n = cpu.n; s.z = cpu.z; s.c = cpu.c; s.v = cpu.v; s.cpsr = cpu.cpsr;
     s.halted = cpu.halted; s.budget = cpu.budget; s.run_len = cpu.run_len;
@@ -131,8 +138,7 @@ uint32_t guest_call(uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t
     guest_depth++;
     uint64_t guard = 0;
     while (!call_done && hle_running) {
-        int n = cpu_run(200000);
-        vcycles += n;
+        kern_nested_step();
         if (++guard > 20000) { hle_log("guest_call %08x did not return", fn); break; }
         if (cpu.halted && !call_done) { cpu.halted = 0; }   /* blocking inside a callback: just keep going */
     }

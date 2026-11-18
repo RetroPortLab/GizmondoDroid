@@ -27,7 +27,7 @@ int giz_launch(const char *exe, const char *sd, const char *sys, const char *arg
     cpu_reset();
     api_kernel_init();
     kern_init();
-    api_crt_init(); fs_init_api(); win_init_api(); gdi_init_api(); gx_init_api(); audio_init_api(); api_misc_init(); api_user_init();
+    api_crt_init(); fs_init_api(); win_init_api(); gdi_init_api(); gx_init_api(); gles_init_api(); audio_init_api(); api_misc_init(); api_user_init();
     fs_set_roots(g_sd, g_sys);
     snprintf(fs_cwd, sizeof fs_cwd, "\\");
     Module *m = pe_load_exe(exe, err, errlen);

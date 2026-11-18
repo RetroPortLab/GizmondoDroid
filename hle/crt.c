@@ -24,7 +24,7 @@ int hle_format(char *out, int outmax, const char *fmt, int wide_fmt, uint32_t va
         if (*f != '%') { if (o < outmax - 1) out[o] = *f; o++; continue; }
         f++;
         if (*f == '%') { if (o < outmax - 1) out[o] = '%'; o++; continue; }
-        char spec[32]; int sl = 0, ll = 0, hh = 0, width = -1, prec = -1;
+        char spec[32]; int sl = 0, ll = 0, hh = 0, lw = 0, width = -1, prec = -1;
         spec[sl++] = '%';
         while (*f && strchr("-+ #0", *f)) { if (sl < 12) spec[sl++] = *f; f++; }
         if (*f == '*') { width = (int)N32(); f++; if (width < 0) { spec[sl++] = '-'; width = -width; } }
@@ -32,7 +32,7 @@ int hle_format(char *out, int outmax, const char *fmt, int wide_fmt, uint32_t va
         if (*f == '.') { f++; prec = 0; if (*f == '*') { prec = (int)N32(); f++; } else while (isdigit((unsigned char)*f)) { prec = prec * 10 + *f - '0'; f++; } }
         if (!strncmp(f, "I64", 3)) { ll = 1; f += 3; }
         else if (*f == 'l' && f[1] == 'l') { ll = 1; f += 2; }
-        else if (*f == 'l' || *f == 'w' || *f == 'L') f++;
+        else if (*f == 'l' || *f == 'w' || *f == 'L') { lw = 1; f++; }
         else if (*f == 'h') { hh = 1; f++; }
         char conv = *f; if (!conv) break;
         char tmp[1100]; int tl = 0;
@@ -67,7 +67,7 @@ int hle_format(char *out, int outmax, const char *fmt, int wide_fmt, uint32_t va
             tl = snprintf(tmp, sizeof tmp, hs, cs); break; }
         case 's': case 'S': {
             uint32_t p = N32(); char sb[1024];
-            int wide = (conv == 's') == (wide_fmt != 0);
+            int wide = hh ? 0 : lw ? 1 : ((conv == 's') == (wide_fmt != 0));
             if (!p) snprintf(sb, sizeof sb, "(null)");
             else if (wide) gw_read(p, sb, sizeof sb); else gs_read(p, sb, sizeof sb);
             snprintf(hs, sizeof hs, "%s%s%ss", spec, w, pr);
@@ -168,6 +168,29 @@ static void api_strcmp(void) { R((uint32_t)scmp(A(0), A(1), -1, 0)); }
 static void api_strncmp(void) { R((uint32_t)scmp(A(0), A(1), A(2), 0)); }
 static void api_stricmp(void) { R((uint32_t)scmp(A(0), A(1), -1, 1)); }
 static void api_strnicmp(void) { R((uint32_t)scmp(A(0), A(1), A(2), 1)); }
+static uint32_t strtok_save, wcstok_save;
+static void api_strtok(void) {
+    uint32_t s = A(0) ? A(0) : strtok_save, d = A(1);
+    if (!s) { R(0); return; }
+    #define INSET8(c) ({ int _f = 0; for (uint32_t q = d; r8(q); q++) if (r8(q) == (c)) { _f = 1; break; } _f; })
+    while (r8(s) && INSET8(r8(s))) s++;
+    if (!r8(s)) { strtok_save = 0; R(0); return; }
+    uint32_t t = s;
+    while (r8(t) && !INSET8(r8(t))) t++;
+    if (r8(t)) { w8(t, 0); strtok_save = t + 1; } else strtok_save = 0;
+    R(s);
+}
+static void api_wcstok(void) {
+    uint32_t s = A(0) ? A(0) : wcstok_save, d = A(1);
+    if (!s) { R(0); return; }
+    #define INSET16(c) ({ int _f = 0; for (uint32_t q = d; r16(q); q += 2) if (r16(q) == (c)) { _f = 1; break; } _f; })
+    while (r16(s) && INSET16(r16(s))) s += 2;
+    if (!r16(s)) { wcstok_save = 0; R(0); return; }
+    uint32_t t = s;
+    while (r16(t) && !INSET16(r16(t))) t += 2;
+    if (r16(t)) { w16(t, 0); wcstok_save = t + 2; } else wcstok_save = 0;
+    R(s);
+}
 static void api_strchr(void) { uint32_t a = A(0); uint8_t c = (uint8_t)A(1); for (;; a++) { if (r8(a) == c) { R(a); return; } if (!r8(a)) { R(0); return; } } }
 static void api_strrchr(void) { uint32_t a = A(0), r = 0; uint8_t c = (uint8_t)A(1); for (;; a++) { if (r8(a) == c) r = a; if (!r8(a)) break; } R(r); }
 static void api_strstr(void) {
@@ -401,7 +424,7 @@ static const ApiDef cdefs[] = {
     E("_memicmp", api_memcmp), E("wmemset", api_wmemset), E("wmemcpy", api_wmemcpy),
     E("strlen", api_strlen), E("strcpy", api_strcpy), E("strncpy", api_strncpy), E("strcat", api_strcat), E("strncat", api_strncat),
     E("strcmp", api_strcmp), E("strncmp", api_strncmp), E("_stricmp", api_stricmp), E("stricmp", api_stricmp), E("_strnicmp", api_strnicmp), E("strnicmp", api_strnicmp),
-    E("strchr", api_strchr), E("strrchr", api_strrchr), E("strstr", api_strstr), E("_strdup", api_strdup),
+    E("strtok", api_strtok), E("wcstok", api_wcstok), E("strchr", api_strchr), E("strrchr", api_strrchr), E("strstr", api_strstr), E("_strdup", api_strdup),
     E("atoi", api_atoi), E("atol", api_atoi), E("atof", api_atof), E("strtol", api_strtol), E("strtoul", api_strtoul), E("strtod", api_strtod),
     E("_itoa", api_itoa), E("_ltoa", api_itoa), E("_ultoa", api_itoa), E("toupper", api_toupper), E("tolower", api_tolower), E("_toupper", api_toupper), E("_tolower", api_tolower),
     E("isalpha", api_isalpha), E("isdigit", api_isdigit), E("isalnum", api_isalnum), E("isspace", api_isspace), E("isupper", api_isupper), E("islower", api_islower),

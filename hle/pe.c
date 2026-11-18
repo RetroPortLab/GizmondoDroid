@@ -23,7 +23,7 @@ void pe_add_search(const char *dir) {
 static const char *const builtin[] = {
     "coredll", "gx", "aygshell", "commctrl", "toolhelp", "mmtimer", "winsock", "ws2", "ole32", "oleaut32",
     "ceshell", "commdlg", "imgdecmp", "cemapi", "notify", "pimstore", "wininet", "iphlpapi", "ddraw", "msgstore",
-    "phone", "sms", "gpsapi", "winmm", "devload", NULL };
+    "phone", "sms", "gpsapi", "winmm", "devload", "libGLES_CM", "libGLES", NULL };
 
 static int is_builtin(const char *name) {
     char b[80]; snprintf(b, sizeof b, "%s", name);

@@ -93,6 +93,7 @@ extern uint32_t cpu_hz;
 uint32_t tick_ms(void);
 void     kern_init(void);
 int      kern_start_main(Module *m, const char *cmdline);
+int      kern_nested_step(void);             /* scheduler step used while a nested guest call is waiting */
 void     kern_run_frame(void);               /* run one 1/60 s slice of the machine */
 void     kern_set_error(uint32_t e);
 void     kern_wait_message(uint32_t timeout_ms);
@@ -114,6 +115,7 @@ extern uint16_t *fb_host(void);              /* RGB565 320x240 */
 void win_init_api(void);
 void gdi_init_api(void);
 void gx_init_api(void);
+void gles_init_api(void);
 void win_poll(void);                          /* timers, paint, input -> messages */
 int  win_has_message_waiter(void);
 void input_key(int vk, int down);
