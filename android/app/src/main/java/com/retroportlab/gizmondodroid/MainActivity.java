@@ -242,8 +242,11 @@ public class MainActivity extends Activity {
         LinearLayout stretch = row("Fill the screen", "Off keeps the original 4:3 shape", prefs.getBoolean("stretch", false) ? "On" : "Off", null);
         stretch.setOnClickListener(v -> toggle("stretch", false, stretch));
         list.addView(stretch);
-        LinearLayout overlay = row("On-screen buttons", "A touch D-pad and buttons around the screen", prefs.getBoolean("overlay", true) ? "On" : "Off", null);
-        overlay.setOnClickListener(v -> toggle("overlay", true, overlay));
+        LinearLayout integer = row("Integer scaling", "Whole-number size (4x on the Retroid Pocket Nova) for the sharpest pixels", prefs.getBoolean("integer", true) ? "On" : "Off", null);
+        integer.setOnClickListener(v -> toggle("integer", true, integer));
+        list.addView(integer);
+        LinearLayout overlay = row("On-screen buttons", "A touch D-pad and buttons around the screen", prefs.getBoolean("overlay", false) ? "On" : "Off", null);
+        overlay.setOnClickListener(v -> toggle("overlay", false, overlay));
         list.addView(overlay);
         LinearLayout fps = row("Show FPS", null, prefs.getBoolean("showFps", false) ? "On" : "Off", null);
         fps.setOnClickListener(v -> toggle("showFps", false, fps));
@@ -568,7 +571,7 @@ public class MainActivity extends Activity {
         screen = SCREEN_GAME;
         root.removeAllViews();
         root.setBackgroundColor(Color.BLACK);
-        ScreenView view = new ScreenView(this, prefs.getBoolean("stretch", false));
+        ScreenView view = new ScreenView(this, prefs.getBoolean("stretch", false), prefs.getBoolean("integer", true));
         view.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override public void surfaceCreated(SurfaceHolder h) { NativeLib.setSurface(h.getSurface()); }
             @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) { NativeLib.setSurface(h.getSurface()); }
@@ -577,7 +580,7 @@ public class MainActivity extends Activity {
         root.addView(view, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
         keyMask = padMask = axisMask = 0; menuOpen = false; pauseMenu = null; fpsView = null;
         ui.removeCallbacks(fpsTick);
-        if (prefs.getBoolean("overlay", true)) {
+        if (prefs.getBoolean("overlay", false)) {
             // D-pad on the left, A/B/C/Start on the right
             FrameLayout pad = new FrameLayout(this);
             View up = btn("▲", NativeLib.UP, 56, 56), dn = btn("▼", NativeLib.DOWN, 56, 56), lf = btn("◀", NativeLib.LEFT, 56, 56), rt = btn("▶", NativeLib.RIGHT, 56, 56);
@@ -615,11 +618,12 @@ public class MainActivity extends Activity {
 
     /** The Gizmondo screen: keeps 4:3 (unless stretched) and turns touches into stylus input. */
     static class ScreenView extends SurfaceView {
-        private final boolean stretch;
-        ScreenView(Context c, boolean stretch) { super(c); this.stretch = stretch; }
+        private final boolean stretch, integer;
+        ScreenView(Context c, boolean stretch, boolean integer) { super(c); this.stretch = stretch; this.integer = integer; }
         @Override protected void onMeasure(int wSpec, int hSpec) {
             int w = MeasureSpec.getSize(wSpec), h = MeasureSpec.getSize(hSpec);
             if (!stretch) { if (w * 3 > h * 4) w = h * 4 / 3; else h = w * 3 / 4; }
+            if (integer && !stretch) { int k = Math.min(MeasureSpec.getSize(wSpec) / NativeLib.SCREEN_W, MeasureSpec.getSize(hSpec) / NativeLib.SCREEN_H); if (k >= 1) { w = NativeLib.SCREEN_W * k; h = NativeLib.SCREEN_H * k; } }
             setMeasuredDimension(w, h);
         }
         @Override public boolean onTouchEvent(MotionEvent e) {

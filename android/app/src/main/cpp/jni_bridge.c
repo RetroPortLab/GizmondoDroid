@@ -222,6 +222,11 @@ JNIEXPORT void JNICALL FN(setSurface)(JNIEnv *env, jclass c, jobject surface) {
     win_w = win_h = 0;
     if (surface) window = ANativeWindow_fromSurface(env, surface);
     pthread_mutex_unlock(&win_lock);
+    if (window) {   /* 120 Hz panels (Retroid Pocket Nova): ask for 60 Hz so frame pacing matches the emulator */
+        typedef int32_t (*setfr_t)(ANativeWindow *, float, int8_t);
+        setfr_t f = (setfr_t)dlsym(RTLD_DEFAULT, "ANativeWindow_setFrameRate");
+        if (f) f(window, 60.0f, 0);
+    }
     if (window && paused && giz_running()) present();
 }
 
