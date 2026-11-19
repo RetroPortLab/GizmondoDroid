@@ -47,7 +47,7 @@ import java.util.Locale;
 
 /** GizmondoDroid front-end: a library of the Windows CE programs in your games folder, settings, and the in-game menu. */
 public class MainActivity extends Activity {
-    static final int BG = 0xFF0C0D14, PANEL = 0xFF171926, TEXT = 0xFFEDEEF5, SUBTEXT = 0xFF9A9DB5, ACCENT = 0xFF4FA3FF;
+    static final int BG = 0xFF0C0D14, PANEL = 0xFF171926, TEXT = 0xFFEDEEF5, SUBTEXT = 0xFF9A9DB5, ACCENT = 0xFF6DD35F;
     static final String[] FILTERS = { "Sharp", "Smooth 3x", "Scanlines", "LCD grid" };
     static final String[] BTN_NAMES = { "D-pad up", "D-pad down", "D-pad left", "D-pad right", "A", "B", "C", "Start" };
     static final int[] DEFAULT_KEYS = { KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT,
@@ -136,6 +136,7 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(label); b.setAllCaps(false); b.setTextColor(TEXT);
         b.setBackground(rounded(0xFF26293D, 0));
+        if (label.equals("Install game") || label.equals("Install")) { b.setTextColor(BG); b.setBackground(rounded(ACCENT, 0)); }
         b.setOnClickListener(c);
         return b;
     }
@@ -149,7 +150,13 @@ public class MainActivity extends Activity {
         col.setPadding(dp(24), dp(16), dp(24), dp(16));
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        head.addView(text(title, 24, TEXT, true), new LinearLayout.LayoutParams(0, -2, 1));
+        TextView ttl = text(title, 24, TEXT, true);
+        if (title.equals("GizmondoDroid")) {   /* shared wordmark: bold italic, name in white + DROID in the accent colour */
+            android.text.SpannableString ws = new android.text.SpannableString("GIZMONDODROID");
+            ws.setSpan(new android.text.style.ForegroundColorSpan(ACCENT), 8, 13, 0);
+            ttl.setText(ws); ttl.setTypeface(Typeface.DEFAULT_BOLD, Typeface.BOLD_ITALIC);
+        }
+        head.addView(ttl, new LinearLayout.LayoutParams(0, -2, 1));
         if (back != null) head.addView(back);
         col.addView(head);
         ScrollView sv = new ScrollView(this);
@@ -232,29 +239,42 @@ public class MainActivity extends Activity {
 
     private int mappedKey(int i) { return prefs.getInt("key_" + i, DEFAULT_KEYS[i]); }
 
+    private void section(LinearLayout list, String name) {
+        TextView t = text(name.toUpperCase(Locale.ROOT), 12, SUBTEXT, true);
+        t.setPadding(dp(4), dp(14), 0, dp(4));
+        list.addView(t);
+    }
+
     private void showSettings() {
         screen = SCREEN_SETTINGS; menuOpen = false;
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
+        section(list, "Display");
         LinearLayout filter = row("Screen filter", null, FILTERS[filterMode()], null);
         filter.setOnClickListener(v -> { int f = (filterMode() + 1) % FILTERS.length; prefs.edit().putInt("filter", f).apply(); setRowValue(filter, FILTERS[f]); });
         list.addView(filter);
-        LinearLayout stretch = row("Fill the screen", "Off keeps the original 4:3 shape", prefs.getBoolean("stretch", false) ? "On" : "Off", null);
-        stretch.setOnClickListener(v -> toggle("stretch", false, stretch));
-        list.addView(stretch);
         LinearLayout integer = row("Integer scaling", "Whole-number size (4x on the Retroid Pocket Nova) for the sharpest pixels", prefs.getBoolean("integer", true) ? "On" : "Off", null);
         integer.setOnClickListener(v -> toggle("integer", true, integer));
         list.addView(integer);
-        LinearLayout overlay = row("On-screen buttons", "A touch D-pad and buttons around the screen", prefs.getBoolean("overlay", false) ? "On" : "Off", null);
-        overlay.setOnClickListener(v -> toggle("overlay", false, overlay));
-        list.addView(overlay);
+        LinearLayout stretch = row("Fill the screen", "Off keeps the original 4:3 shape", prefs.getBoolean("stretch", false) ? "On" : "Off", null);
+        stretch.setOnClickListener(v -> toggle("stretch", false, stretch));
+        list.addView(stretch);
         LinearLayout fps = row("Show FPS", null, prefs.getBoolean("showFps", false) ? "On" : "Off", null);
         fps.setOnClickListener(v -> toggle("showFps", false, fps));
         list.addView(fps);
-        list.addView(row("Graphics", "Frameskip, texture filtering, fog, CPU mode", null, v -> showGraphics()));
-        list.addView(row("Controls", "Remap the controller buttons", null, v -> showControls()));
+        section(list, "Controls");
+        list.addView(row("Button remap", "Map your controller buttons to the Gizmondo's", null, v -> showControls()));
         list.addView(row("Game keys", "Choose which key each Gizmondo button presses in the game", null, v -> showGameKeys()));
+        LinearLayout overlay = row("On-screen buttons", "A touch D-pad and buttons around the screen", prefs.getBoolean("overlay", false) ? "On" : "Off", null);
+        overlay.setOnClickListener(v -> toggle("overlay", false, overlay));
+        list.addView(overlay);
+        section(list, "Performance");
+        cycleRow(list, "Frameskip", "Auto drops frames only when the device falls behind", "gfx_skip", GFX_FRAMESKIP, 1);
+        cycleRow(list, "CPU mode", "Try the interpreter if a game crashes with JIT", "gfx_cpu", GFX_CPU, 1);
+        list.addView(row("More graphics options", "Texture filtering, fog, texture accuracy", null, v -> showGraphics()));
+        section(list, "Library");
         list.addView(row("Games folder", gamesDir().getAbsolutePath(), null, v -> toast("Put your .exe files in that folder")));
+        section(list, "About");
         LinearLayout au = row("Check for updates on start", null, prefs.getBoolean("autoUpdate", true) ? "On" : "Off", null);
         au.setOnClickListener(v -> toggle("autoUpdate", true, au));
         list.addView(au);
@@ -262,6 +282,7 @@ public class MainActivity extends Activity {
         list.addView(text("Save states aren't available yet in HLE mode. Original Gizmondo firmware boot is planned.", 12, SUBTEXT, false));
         page("Settings", list, pill("Back", v -> showHome()));
     }
+
 
     // ----------------------------------------------------------------- graphics & game keys --
     private static final String[] GFX_FRAMESKIP = { "Off", "Auto", "Always (30 fps)" };
@@ -282,13 +303,11 @@ public class MainActivity extends Activity {
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         list.addView(text("These apply the next time you start a game.", 13, SUBTEXT, false));
-        cycleRow(list, "Frameskip", "Auto drops frames only when the device falls behind; keeps speed and sound steady", "gfx_skip", GFX_FRAMESKIP, 1);
         cycleRow(list, "Texture filtering", "Sharp is fastest", "gfx_filter", GFX_FILTER, 0);
         LinearLayout fog = row("Fog", "Off is a little faster", prefs.getBoolean("gfx_fog", true) ? "On" : "Off", null);
         fog.setOnClickListener(v -> toggle("gfx_fog", true, fog));
         list.addView(fog);
         cycleRow(list, "Texture accuracy", "Fastest may warp textures slightly on big polygons", "gfx_persp", GFX_PERSP, 1);
-        cycleRow(list, "CPU mode", "Try the interpreter if a game crashes with JIT", "gfx_cpu", GFX_CPU, 1);
         page("Graphics", list, pill("Back", v -> showSettings()));
     }
 
