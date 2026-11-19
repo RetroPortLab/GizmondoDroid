@@ -9,7 +9,7 @@
 
 extern void (*hle_log_sink)(const char *line);
 static char g_sd[512], g_sys[512];
-static uint32_t frames_run;
+uint32_t frames_run;
 
 void giz_set_log(void (*sink)(const char *)) { hle_log_sink = sink; }
 void giz_set_audio_rate(uint32_t hz) { audio_rate = hz ? hz : 44100; }

@@ -5,12 +5,13 @@
 #include <stdatomic.h>
 
 uint32_t audio_rate = 44100;
+extern uint32_t frames_run;
 
 #define RING 32768
 static int16_t ring[RING * 2];
 static atomic_uint ring_w, ring_r;      /* frame counters */
 
-typedef struct Buf { uint32_t hdr, data, len, pos; struct Buf *next; } Buf;
+typedef struct Buf { uint32_t hdr, data, len, pos, loops; struct Buf *next; } Buf;
 typedef struct { int used, playing, paused; uint32_t rate, chans, bits, cb_type, cb, inst, h; Buf *head, *tail; uint64_t played_bytes; double frac; } Stream;
 static Stream streams[4];
 
@@ -46,6 +47,8 @@ static void api_waveOutUnprepareHeader(void) { w32(A(1) + 16, r32(A(1) + 16) & ~
 static void api_waveOutWrite(void) {
     Stream *s = strm(A(0)); uint32_t hdr = A(1); if (!s) { R(5); return; }
     Buf *b = calloc(1, sizeof *b); b->hdr = hdr; b->data = r32(hdr); b->len = r32(hdr + 4);
+    { uint32_t fl = r32(hdr + 16); b->loops = ((fl & 4) && (fl & 8)) ? r32(hdr + 20) : 1; }   /* BEGINLOOP+ENDLOOP in one header = loop it dwLoops times (0xFFFFFFFF = forever: a ring buffer the game refills behind the play cursor) */
+    if (getenv("GIZ_AUDIOLOG")) fprintf(stderr, "audio: [f%u] Write len=%u rate=%u ch=%u bits=%u flags=%x loops=%u\n", frames_run, b->len, s->rate, s->chans, s->bits, r32(hdr + 16), r32(hdr + 20));
     w32(hdr + 16, (r32(hdr + 16) & ~1u) | 0x10 | 2);
     if (s->tail) s->tail->next = b; else s->head = b;
     s->tail = b; R(0);
@@ -53,12 +56,13 @@ static void api_waveOutWrite(void) {
 static void drain_all(Stream *s) {
     while (s->head) { Buf *b = s->head; s->head = b->next; if (!s->head) s->tail = NULL; w32(b->hdr + 16, (r32(b->hdr + 16) & ~0x10u) | 1); uint32_t h = b->hdr; free(b); notify(s, h); }
 }
-static void api_waveOutReset(void) { Stream *s = strm(A(0)); if (!s) { R(5); return; } drain_all(s); R(0); }
+static void api_waveOutReset(void) { if (getenv("GIZ_AUDIOLOG")) fprintf(stderr, "audio: [f%u] Reset\n", frames_run); Stream *s = strm(A(0)); if (!s) { R(5); return; } drain_all(s); R(0); }
 static void api_waveOutPause(void) { Stream *s = strm(A(0)); if (s) s->paused = 1; R(0); }
 static void api_waveOutRestart(void) { Stream *s = strm(A(0)); if (s) s->paused = 0; R(0); }
 static void api_waveOutGetPosition(void) {
     Stream *s = strm(A(0)); if (!s) { R(5); return; }
     uint32_t t = A(1), type = r32(t); uint32_t bpf = s->chans * s->bits / 8;
+    if (getenv("GIZ_AUDIOLOG")) { unsigned long sum = 0; if (s->head) for (uint32_t k = 0; k + 1 < s->head->len; k += 2) sum += abs((int16_t)r16(s->head->data + k)); fprintf(stderr, "audio: [f%u] GetPosition type=%u played=%llu queued=%d bufsum=%lu\n", frames_run, type, (unsigned long long)s->played_bytes, s->head != NULL, sum); }
     if (type == 2) w32(t + 4, (uint32_t)(s->played_bytes / bpf)); else { w32(t, 4); w32(t + 4, (uint32_t)s->played_bytes); }
     R(0);
 }
@@ -74,6 +78,8 @@ static void api_PlaySoundW(void) { R(1); }
 /* next stereo frame of one stream (resampled to audio_rate); returns 0 when out of data */
 static int stream_frame(Stream *s, int *l, int *r) {
     while (s->head && s->head->pos >= s->head->len) {
+        Buf *lb = s->head;
+        if (lb->len && lb->loops > 1) { if (lb->loops != 0xFFFFFFFFu) lb->loops--; lb->pos = 0; break; }
         Buf *b = s->head; s->head = b->next; if (!s->head) s->tail = NULL;
         w32(b->hdr + 16, (r32(b->hdr + 16) & ~0x10u) | 1);
         uint32_t h = b->hdr; free(b); notify(s, h);
@@ -92,10 +98,11 @@ static int stream_frame(Stream *s, int *l, int *r) {
     return 1;
 }
 
-static unsigned dbg_frames, dbg_starved;
+static unsigned dbg_frames, dbg_starved; static unsigned long long dbg_amp; static unsigned dbg_n;
 void audio_frame(int frames) {
     int starved = 0, anyused = 0;
     unsigned w = atomic_load(&ring_w), r = atomic_load(&ring_r);
+    if (getenv("GIZ_AUDIOLOG")) { atomic_store(&ring_r, w); r = w; }   /* desktop test: nobody drains the ring */
     if (w - r > RING - (unsigned)frames - 1) return;   /* host is not draining: drop */
     for (int i = 0; i < frames; i++) {
         int L = 0, R_ = 0;
@@ -104,9 +111,11 @@ void audio_frame(int frames) {
             if (s->used && !s->paused) { anyused = 1; if (stream_frame(s, &l, &rr)) { L += l; R_ += rr; } else starved++; }
         }
         if (L > 32767) L = 32767; if (L < -32768) L = -32768; if (R_ > 32767) R_ = 32767; if (R_ < -32768) R_ = -32768;
+        dbg_amp += (unsigned)abs(L);
         ring[2 * ((w + i) % RING)] = (int16_t)L; ring[2 * ((w + i) % RING) + 1] = (int16_t)R_;
     }
     atomic_store(&ring_w, w + frames);
+    if (getenv("GIZ_AUDIOLOG") && ++dbg_n % 30 == 0) { fprintf(stderr, "audio: mean|L|=%llu streams=%d\n", dbg_amp / (30ull * frames), anyused); dbg_amp = 0; }
     if (anyused) { dbg_frames++; if (starved) dbg_starved++; if (getenv("GIZ_AUDIOLOG") && dbg_frames % 300 == 0) fprintf(stderr, "audio: %u/%u frames starved\n", dbg_starved, dbg_frames); }
 }
 int audio_read(int16_t *out, int frames) {
