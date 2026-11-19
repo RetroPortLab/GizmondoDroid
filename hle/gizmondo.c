@@ -41,6 +41,8 @@ int giz_launch(const char *exe, const char *sd, const char *sys, const char *arg
     return 0;
 }
 
+extern int gles_skip_request;
+void giz_set_frameskip(int on) { gles_skip_request = on; }
 void giz_frame(void) {
     if (hle_exec_pending) {
         char p[512], a[512]; snprintf(p, sizeof p, "%s", hle_exec_path); snprintf(a, sizeof a, "%s", hle_exec_args);

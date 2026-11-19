@@ -133,6 +133,7 @@ static void *run(void *arg) {
         int64_t t = now_ns();
         if (t - fps_t0 >= 1000000000LL) { fps = fps_frames * 1e9f / (float)(t - fps_t0); fps_t0 = t; fps_frames = 0; }
         next += frame_ns;
+        giz_set_frameskip(t > next);
         if (next > t) {
             struct timespec ts = { (time_t)(next / 1000000000LL), (long)(next % 1000000000LL) };
             clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);

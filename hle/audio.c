@@ -107,7 +107,11 @@ void audio_frame(int frames) {
     atomic_store(&ring_w, w + frames);
 }
 int audio_read(int16_t *out, int frames) {
+    static int primed;
     unsigned w = atomic_load(&ring_w), r = atomic_load(&ring_r); int got = 0;
+    /* after an underrun, wait until ~2 emulated frames are buffered again so playback resumes smoothly instead of crackling */
+    if (!primed) { if (w - r < (unsigned)(audio_rate / 30)) { for (int i = 0; i < frames * 2; i++) out[i] = 0; return 0; } primed = 1; }
+    if (w - r < (unsigned)frames) primed = 0;
     while (got < frames && r != w) { out[2 * got] = ring[2 * (r % RING)]; out[2 * got + 1] = ring[2 * (r % RING) + 1]; r++; got++; }
     atomic_store(&ring_r, r);
     for (int i = got; i < frames; i++) { out[2 * i] = 0; out[2 * i + 1] = 0; }

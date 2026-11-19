@@ -18,6 +18,7 @@
 /* Start a Windows CE ARM program. sd_root is what the guest sees as \Storage Card (and \SD Card),
  * sys_root backs the rest of the guest file system (\Windows, \My Documents ...). Returns 0 on success. */
 int  giz_launch(const char *exe_path, const char *sd_root, const char *sys_root, const char *args, char *err, int errlen);
+void giz_set_frameskip(int on);               /* host is behind real time: skip rasterising upcoming frames */
 void giz_frame(void);                         /* advance 1/60 s of emulated time (CPU + audio) */
 const uint16_t *giz_screen(void);             /* 320x240 RGB565 */
 int  giz_running(void);

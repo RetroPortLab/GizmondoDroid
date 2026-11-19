@@ -48,7 +48,15 @@ static void e_CreateWindowSurface(void) { R(2); }
 static void e_CreateContext(void) { R(3); }
 static void e_MakeCurrent(void) { R(1); }
 extern void kern_vsync(void);
-static void e_SwapBuffers(void) { frame_dirty = 1; R(1); kern_vsync(); }
+/* Frame skipping: when the host is behind real time it asks for the next frame(s) not to be rasterised (game logic and audio keep running). */
+int gles_skip_request;
+static int skipping, skip_run;
+static void e_SwapBuffers(void) {
+    if (!skipping) frame_dirty = 1;
+    skipping = gles_skip_request && skip_run < 2;
+    skip_run = skipping ? skip_run + 1 : 0;
+    R(1); kern_vsync();
+}
 
 /* ---------------------------------------------------------------- state */
 static void g_MatrixMode(void) { uint32_t m = A(0); mode_idx = m == 0x1701 ? 1 : m == 0x1702 ? 2 : 0; }
@@ -85,7 +93,7 @@ static void g_ClearColorx(void) { for (int i = 0; i < 3; i++) clearcol[i] = fx(A
 static void g_DepthFunc(void) { depth_func = (int)A(0); }
 static void g_DepthMask(void) { depth_mask = A(0) != 0; }
 static void g_BlendFunc(void) { blend_s = (int)A(0); blend_d = (int)A(1); }
-static void g_AlphaFuncx(void) { alpha_func = (int)A(0); alpha_ref = fx(A(1)); }
+static void g_AlphaFuncx(void) { alpha_func = (int)A(0); alpha_ref = fx(A(1)); if (getenv("GIZ_GLLOG")) hle_log("AlphaFuncx %x %f", alpha_func, alpha_ref); }
 static void g_FrontFace(void) { front_ccw = A(0) == 0x0901; }
 static void g_CullFace(void) { cull_mode = (int)A(0); }
 static void g_Finish(void) { }
@@ -218,6 +226,7 @@ static void g_CompressedTexImage2D(void) {
         }
         alpha = kind == 1 || kind == 3 || kind == 4;
         if (getenv("GIZ_GLDUMP") && w == 16) { hle_log("pal4 tex%d level=%d size=%u: pal0=%08x pal1=%08x pal2=%08x pal15=%08x idx0..7=%02x%02x%02x%02x%02x%02x%02x%02x", bound[cur_unit], (int)A(1), A(6), pal[0], pal[1], pal[2], pal[15], r8(src+n*psz), r8(src+n*psz+1), r8(src+n*psz+2), r8(src+n*psz+3), r8(src+n*psz+4), r8(src+n*psz+5), r8(src+n*psz+6), r8(src+n*psz+7)); }
+        if (getenv("GIZ_GLLOG")) { int lo = 0; for (int i = 0; i < n; i++) if ((pal[i] >> 24) < 255) lo++; hle_log("pal tex%d %dx%d kind=%d palette entries with alpha<255: %d (pal0=%08x)", bound[cur_unit], w, h, kind, lo, pal[0]); }
         uint32_t idx = src + n * psz;
         for (int i = 0; i < w * h; i++) {
             int v = eight ? r8(idx + i) : ((r8(idx + i / 2) >> ((i & 1) ? 0 : 4)) & 15);
@@ -287,6 +296,7 @@ static inline uint32_t texel(const Tex *t, int x, int y) {
     return t->px[y * t->w + x];
 }
 
+static int getenv_noalpha;
 static int zpass(float z, float old) {
     switch (depth_func) {
     case 0x200: return 0; case 0x201: return z < old; case 0x202: return z == old; case 0x203: return z <= old;
@@ -302,6 +312,7 @@ static float bfac(int f, float sc, float sa, float dc, float da, int sat) {
 }
 
 static void raster(const SV *a, const SV *b, const SV *c) {
+    if (skipping) return;
     float area = (b->x - a->x) * (c->y - a->y) - (c->x - a->x) * (b->y - a->y);   /* screen y is down */
     if (area == 0 || area != area) return;
     int front = (area < 0) == (front_ccw != 0);          /* CCW in GL (y up) is negative area with y down */
@@ -354,20 +365,26 @@ static void raster(const SV *a, const SV *b, const SV *c) {
             else if (A0 < 0) { empty = 1; break; }
         }
         if (empty) continue;
-        int xs = (int)ceilf(lo - 0.5f), xe = (int)floorf(hi - 0.5f);
+        int xs = (int)ceilf(lo - 0.5f - 0.004f), xe = (int)floorf(hi - 0.5f + 0.004f);   /* tiny conservative bias: shared edges must never leave gaps */
         if (xs < x0) xs = x0; if (xe > x1) xe = x1;
         if (xs > xe) continue;
         float dy_ = py - a->y, dx_ = (xs + 0.5f) - a->x, v[NATT];
         for (int k = 0; k < NATT; k++) v[k] = f0[k] + gx[k] * dx_ + gy[k] * dy_;
-        int pi = y * SCREEN_W + xs;
+        int pi = y * SCREEN_W + xs, chunk = 0; float cu = 0, cv = 0, dcu = 0, dcv = 0;
         for (int x = xs; x <= xe; x++, pi++) {
             float z = v[N_Z];
             if (z >= 0 && z <= 1 && (!en_depth || zpass(z, zbuf[pi]))) {
                 float r = v[N_R], g = v[N_G], bl = v[N_B], al = v[N_A];
                 int keep = 1;
                 if (tex) {
-                    float w = 1.0f / v[N_IW];
-                    float fu = v[N_U] * w * tex->w, fv = v[N_V] * w * tex->h;
+                    if (chunk == 0) {   /* exact perspective division every 8 pixels, linear in between */
+                        int n = xe - x + 1; if (n > 8) n = 8; chunk = n;
+                        float w0 = 1.0f / v[N_IW];
+                        cu = v[N_U] * w0 * tex->w; cv = v[N_V] * w0 * tex->h;
+                        float iw1 = v[N_IW] + gx[N_IW] * n, w1 = iw1 > 1e-9f ? 1.0f / iw1 : w0;
+                        dcu = ((v[N_U] + gx[N_U] * n) * w1 * tex->w - cu) / n; dcv = ((v[N_V] + gx[N_V] * n) * w1 * tex->h - cv) / n;
+                    }
+                    float fu = cu, fv = cv;
                     float tr, tg, tb, ta_;
                     if (tex->magl) {
                         fu -= 0.5f; fv -= 0.5f;
@@ -386,11 +403,12 @@ static void raster(const SV *a, const SV *b, const SV *c) {
                     }
                     r *= tr; g *= tg; bl *= tb; al *= ta_;
                 }
-                if (en_alpha) {
+                if (en_alpha && !getenv_noalpha) {
+                    float al8 = floorf(al * 255.0f + 0.5f) * (1.0f / 255.0f), ar8 = floorf(alpha_ref * 255.0f + 0.5f) * (1.0f / 255.0f);   /* compare as 8-bit like real hardware */
                     switch (alpha_func) {
-                    case 0x200: keep = 0; break; case 0x201: keep = al < alpha_ref; break; case 0x202: keep = al == alpha_ref; break;
-                    case 0x203: keep = al <= alpha_ref; break; case 0x204: keep = al > alpha_ref; break; case 0x205: keep = al != alpha_ref; break;
-                    case 0x206: keep = al >= alpha_ref; break; default: keep = 1;
+                    case 0x200: keep = 0; break; case 0x201: keep = al8 < ar8; break; case 0x202: keep = al8 == ar8; break;
+                    case 0x203: keep = al8 <= ar8; break; case 0x204: keep = al8 > ar8; break; case 0x205: keep = al8 != ar8; break;
+                    case 0x206: keep = al8 >= ar8; break; default: keep = 1;
                     }
                 }
                 if (keep) {
@@ -409,6 +427,7 @@ static void raster(const SV *a, const SV *b, const SV *c) {
                 }
             }
             for (int k = 0; k < NATT; k++) v[k] += gx[k];
+            if (tex) { chunk--; cu += dcu; cv += dcv; }
         }
     }
 }
@@ -451,7 +470,7 @@ static void g_DrawArrays(void) { draw((int)A(0), (int)A(2), 0, 0, (int)A(1)); }
 static void g_Clear(void) {
     uint32_t m = A(0);
     uint16_t *fb = fb_host();
-    if ((m & 0x4000) && fb) {
+    if ((m & 0x4000) && fb && !skipping) {
         int r = (int)(clearcol[0] * 31 + 0.5f), g = (int)(clearcol[1] * 63 + 0.5f), b = (int)(clearcol[2] * 31 + 0.5f);
         uint16_t c = (uint16_t)(r << 11 | g << 5 | b);
         for (int i = 0; i < SCREEN_W * SCREEN_H; i++) fb[i] = c;
@@ -476,6 +495,7 @@ static const ApiDef gdefs[] = {
     E("glDrawElements", g_DrawElements), E("glDrawArrays", g_DrawArrays),
 };
 void gles_init_api(void) {
+    getenv_noalpha = getenv("GIZ_NOALPHA") != NULL;
     for (int i = 0; i < MAXTEX; i++) if (texs[i]) { free(texs[i]->px); free(texs[i]); texs[i] = NULL; }
     next_tex = 1; bound[0] = bound[1] = 0; cur_unit = cur_cunit = 0; mode_idx = 0;
     ident(mv); ident(pj); ident(tm); sp[0] = sp[1] = sp[2] = 0;
