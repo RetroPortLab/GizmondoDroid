@@ -243,6 +243,8 @@ JNIEXPORT void JNICALL FN(stop)(JNIEnv *env, jclass c) {
 
 JNIEXPORT void JNICALL FN(setPaused)(JNIEnv *env, jclass c, jboolean p) { (void)env; (void)c; paused = p; }
 JNIEXPORT void JNICALL FN(setFilter)(JNIEnv *env, jclass c, jint f) { (void)env; (void)c; filter = f; }
+JNIEXPORT void JNICALL FN(setOption)(JNIEnv *env, jclass c, jint id, jint v) { (void)env; (void)c; giz_set_option(id, v); }
+JNIEXPORT void JNICALL FN(setAlias)(JNIEnv *env, jclass c, jint b, jint v1, jint v2) { (void)env; (void)c; giz_set_alias(b, v1, v2); }
 JNIEXPORT jfloat JNICALL FN(getFps)(JNIEnv *env, jclass c) { (void)env; (void)c; return fps; }
 JNIEXPORT jboolean JNICALL FN(isRunning)(JNIEnv *env, jclass c) { (void)env; (void)c; return giz_running() ? JNI_TRUE : JNI_FALSE; }
 JNIEXPORT void JNICALL FN(setTouch)(JNIEnv *env, jclass c, jint x, jint y, jboolean down) {

@@ -248,7 +248,9 @@ public class MainActivity extends Activity {
         LinearLayout fps = row("Show FPS", null, prefs.getBoolean("showFps", false) ? "On" : "Off", null);
         fps.setOnClickListener(v -> toggle("showFps", false, fps));
         list.addView(fps);
+        list.addView(row("Graphics", "Frameskip, texture filtering, fog, CPU mode", null, v -> showGraphics()));
         list.addView(row("Controls", "Remap the controller buttons", null, v -> showControls()));
+        list.addView(row("Game keys", "Choose which key each Gizmondo button presses in the game", null, v -> showGameKeys()));
         list.addView(row("Games folder", gamesDir().getAbsolutePath(), null, v -> toast("Put your .exe files in that folder")));
         LinearLayout au = row("Check for updates on start", null, prefs.getBoolean("autoUpdate", true) ? "On" : "Off", null);
         au.setOnClickListener(v -> toggle("autoUpdate", true, au));
@@ -256,6 +258,54 @@ public class MainActivity extends Activity {
         list.addView(row("Check for updates now", "Version " + versionName(), null, v -> manualUpdateCheck()));
         list.addView(text("Save states aren't available yet in HLE mode. Original Gizmondo firmware boot is planned.", 12, SUBTEXT, false));
         page("Settings", list, pill("Back", v -> showHome()));
+    }
+
+    // ----------------------------------------------------------------- graphics & game keys --
+    private static final String[] GFX_FRAMESKIP = { "Off", "Auto", "Always (30 fps)" };
+    private static final String[] GFX_FILTER = { "Game's choice", "Sharp (nearest)", "Smooth (bilinear)" };
+    private static final String[] GFX_PERSP = { "Best", "Balanced", "Fastest" };
+    private static final String[] GFX_CPU = { "Interpreter", "JIT (fast)" };
+    private static final String[] KEY_NAMES = { "Default", "None", "Enter", "Space", "Esc", "Ctrl", "Shift", "Tab", "Up", "Down", "Left", "Right", "Z", "X", "C", "A", "S", "D", "F1", "F2" };
+    private static final int[] KEY_VKS = { -1, 0, 0x0D, 0x20, 0x1B, 0x11, 0x10, 0x09, 0x26, 0x28, 0x25, 0x27, 0x5A, 0x58, 0x43, 0x41, 0x53, 0x44, 0x70, 0x71 };
+
+    private void cycleRow(LinearLayout list, String label, String sub, String key, String[] names, int def) {
+        LinearLayout r = row(label, sub, names[prefs.getInt(key, def) % names.length], null);
+        r.setOnClickListener(v -> { int n = (prefs.getInt(key, def) + 1) % names.length; prefs.edit().putInt(key, n).apply(); setRowValue(r, names[n]); });
+        list.addView(r);
+    }
+
+    private void showGraphics() {
+        screen = SCREEN_SETTINGS; menuOpen = false;
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.addView(text("These apply the next time you start a game.", 13, SUBTEXT, false));
+        cycleRow(list, "Frameskip", "Auto drops frames only when the device falls behind; keeps speed and sound steady", "gfx_skip", GFX_FRAMESKIP, 1);
+        cycleRow(list, "Texture filtering", "Sharp is fastest", "gfx_filter", GFX_FILTER, 0);
+        LinearLayout fog = row("Fog", "Off is a little faster", prefs.getBoolean("gfx_fog", true) ? "On" : "Off", null);
+        fog.setOnClickListener(v -> toggle("gfx_fog", true, fog));
+        list.addView(fog);
+        cycleRow(list, "Texture accuracy", "Fastest may warp textures slightly on big polygons", "gfx_persp", GFX_PERSP, 1);
+        cycleRow(list, "CPU mode", "Try the interpreter if a game crashes with JIT", "gfx_cpu", GFX_CPU, 1);
+        page("Graphics", list, pill("Back", v -> showSettings()));
+    }
+
+    private void showGameKeys() {
+        screen = SCREEN_SETTINGS; menuOpen = false;
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.addView(text("Tap a button to cycle which keyboard key the game receives. Default uses the game's built-in profile. Applies the next time you start a game.", 13, SUBTEXT, false));
+        for (int i = 0; i < 8; i++) cycleRow(list, BTN_NAMES[i], null, "gk_" + i, KEY_NAMES, 0);
+        list.addView(row("Reset to defaults", null, null, v -> { SharedPreferences.Editor e = prefs.edit(); for (int i = 0; i < 8; i++) e.remove("gk_" + i); e.apply(); showGameKeys(); }));
+        page("Game keys", list, pill("Back", v -> showSettings()));
+    }
+
+    private void applyGameOptions() {
+        NativeLib.setOption(0, prefs.getInt("gfx_skip", 1));
+        NativeLib.setOption(1, prefs.getInt("gfx_filter", 0));
+        NativeLib.setOption(2, prefs.getBoolean("gfx_fog", true) ? 1 : 0);
+        NativeLib.setOption(3, prefs.getInt("gfx_persp", 1));
+        NativeLib.setOption(4, prefs.getInt("gfx_cpu", 1));
+        for (int i = 0; i < 8; i++) { int k = prefs.getInt("gk_" + i, 0) % KEY_VKS.length; NativeLib.setAlias(i, KEY_VKS[k], 0); }
     }
 
     private void toggle(String key, boolean def, LinearLayout r) {
@@ -488,6 +538,7 @@ public class MainActivity extends Activity {
     // ----------------------------------------------------------------- game --
     private void play(File exe) {
         File sd = gameRoot(exe);
+        applyGameOptions();
         if (!NativeLib.launch(exe.getAbsolutePath(), sd.getAbsolutePath(), sysDir().getAbsolutePath(), "")) {
             toast(NativeLib.lastError()); return;
         }

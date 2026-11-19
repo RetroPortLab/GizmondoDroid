@@ -41,8 +41,21 @@ int giz_launch(const char *exe, const char *sd, const char *sys, const char *arg
     return 0;
 }
 
-extern int gles_skip_request;
-void giz_set_frameskip(int on) { gles_skip_request = on; }
+extern int gles_skip_request, gles_skip_max, gles_opt_filter, gles_opt_fog, gles_opt_chunk;
+static int g_frameskip_mode = 1;
+void giz_set_frameskip(int behind) { gles_skip_request = g_frameskip_mode == 2 ? 1 : g_frameskip_mode == 1 ? behind : 0; }
+/* Options: 0 frameskip (0 off, 1 auto, 2 always every other frame), 1 texture filter (0 game, 1 nearest, 2 bilinear),
+ * 2 fog (0/1), 3 perspective accuracy (0 best .. 2 fastest), 4 CPU (0 interpreter, 1 JIT when available) */
+extern int cpu_jit;
+void giz_set_option(int id, int v) {
+    switch (id) {
+    case 0: g_frameskip_mode = v; gles_skip_max = v == 2 ? 1 : 2; break;
+    case 1: gles_opt_filter = v; break;
+    case 2: gles_opt_fog = v; break;
+    case 3: gles_opt_chunk = v <= 0 ? 4 : v == 1 ? 8 : 16; break;
+    case 4: cpu_jit = v; break;
+    }
+}
 void giz_frame(void) {
     if (hle_exec_pending) {
         char p[512], a[512]; snprintf(p, sizeof p, "%s", hle_exec_path); snprintf(a, sizeof a, "%s", hle_exec_args);
@@ -68,6 +81,11 @@ static int key_vk_by_name(const char *n) {
     for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) if (!strcasecmp(n, t[i].n)) return t[i].vk;
     return -1;
 }
+static int g_user[8][2], g_user_set[8];
+static const int g_from[8] = { 0x26, 0x28, 0x25, 0x27, 0xC1, 0xC2, 0xC3, 0x0D };
+static void alias_set(int from, int a, int b);
+static void alias_apply_user(void) { for (int i = 0; i < 8; i++) if (g_user_set[i]) alias_set(g_from[i], g_user[i][0], g_user[i][1]); }
+void giz_set_alias(int button, int vk1, int vk2) { if (button < 0 || button > 7) return; g_user_set[button] = vk1 >= 0; g_user[button][0] = vk1; g_user[button][1] = vk2; alias_apply_user(); }
 static void alias_reset(void) { for (int i = 0; i < 256; i++) { g_alias[i][0] = i; g_alias[i][1] = 0; } }
 static void alias_set(int from, int a, int b) { if (from >= 0 && from < 256) { g_alias[from][0] = a; g_alias[from][1] = b; } }
 static void alias_load(const char *exe) {
@@ -75,7 +93,7 @@ static void alias_load(const char *exe) {
     const char *base = strrchr(exe, '/'); base = base ? base + 1 : exe;
     if (!strcasecmp(base, "carmageddon.exe")) { alias_set(0xC1, 0x0D, 0); alias_set(0xC2, 0x20, 0); alias_set(0xC3, 0x1B, 0); }
     char path[PATH_MAX + 64]; snprintf(path, sizeof path, "%s/gizmondodroid-keys.txt", g_sd);
-    FILE *f = fopen(path, "r"); if (!f) return;
+    FILE *f = fopen(path, "r"); if (!f) { alias_apply_user(); return; }
     char line[160];
     while (fgets(line, sizeof line, f)) {
         char *eq = strchr(line, '='); if (!eq) continue; *eq = 0;
@@ -85,6 +103,7 @@ static void alias_load(const char *exe) {
         if (from >= 0 && n >= 1) alias_set(from, (int)a, n >= 2 ? (int)b : 0);
     }
     fclose(f);
+    alias_apply_user();
 }
 void giz_key(int vk, int down) {
     if (vk < 0 || vk > 255) return;

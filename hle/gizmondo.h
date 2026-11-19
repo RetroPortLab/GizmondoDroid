@@ -19,6 +19,8 @@
  * sys_root backs the rest of the guest file system (\Windows, \My Documents ...). Returns 0 on success. */
 int  giz_launch(const char *exe_path, const char *sd_root, const char *sys_root, const char *args, char *err, int errlen);
 void giz_set_frameskip(int on);               /* host is behind real time: skip rasterising upcoming frames */
+void giz_set_option(int id, int v);           /* graphics/CPU options, see gizmondo.c */
+void giz_set_alias(int button, int vk1, int vk2);   /* override what a Gizmondo button sends to the game (vk1 < 0 = back to default) */
 void giz_frame(void);                         /* advance 1/60 s of emulated time (CPU + audio) */
 const uint16_t *giz_screen(void);             /* 320x240 RGB565 */
 int  giz_running(void);

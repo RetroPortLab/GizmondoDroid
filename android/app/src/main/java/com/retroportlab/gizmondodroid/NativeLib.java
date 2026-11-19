@@ -13,6 +13,8 @@ final class NativeLib {
     static native void stop();
     static native void setPaused(boolean p);
     static native void setFilter(int mode);
+    static native void setOption(int id, int value);           // 0 frameskip, 1 texture filter, 2 fog, 3 perspective, 4 CPU
+    static native void setAlias(int button, int vk1, int vk2); // what a Gizmondo button presses in the game (vk1 < 0 = default)
     static native float getFps();
     static native boolean isRunning();
     static native void setTouch(int x, int y, boolean down);   // 320x240 screen coordinates

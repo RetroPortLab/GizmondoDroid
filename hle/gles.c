@@ -49,11 +49,12 @@ static void e_CreateContext(void) { R(3); }
 static void e_MakeCurrent(void) { R(1); }
 extern void kern_vsync(void);
 /* Frame skipping: when the host is behind real time it asks for the next frame(s) not to be rasterised (game logic and audio keep running). */
-int gles_skip_request;
+int gles_skip_request, gles_skip_max = 2, gles_opt_filter, gles_opt_fog = 1, gles_opt_chunk = 8;
+static uint16_t backbuf[320 * 240];   /* games render here; copied to the screen on eglSwapBuffers so half-drawn frames are never shown (no flicker) */
 static int skipping, skip_run;
 static void e_SwapBuffers(void) {
-    if (!skipping) frame_dirty = 1;
-    skipping = gles_skip_request && skip_run < 2;
+    if (!skipping) { uint16_t *fb = fb_host(); if (fb) memcpy(fb, backbuf, sizeof backbuf); frame_dirty = 1; }
+    skipping = gles_skip_request && skip_run < gles_skip_max;
     skip_run = skipping ? skip_run + 1 : 0;
     R(1); kern_vsync();
 }
@@ -328,7 +329,7 @@ static void raster(const SV *a, const SV *b, const SV *c) {
     float inv = 1.0f / area;
     const Tex *tex = (en_tex && ta.on) ? tex_get(bound[0], 0) : NULL;
     if (tex && !tex->px) tex = NULL;
-    uint16_t *fb = fb_host();
+    uint16_t *fb = backbuf;
     if (!fb) return;
     /* attribute planes: f(x,y) = f0 + gx*(x-a.x) + gy*(y-a.y) */
     enum { N_Z, N_IW, N_U, N_V, N_R, N_G, N_B, N_A, N_F, NATT };
@@ -378,7 +379,7 @@ static void raster(const SV *a, const SV *b, const SV *c) {
                 int keep = 1;
                 if (tex) {
                     if (chunk == 0) {   /* exact perspective division every 8 pixels, linear in between */
-                        int n = xe - x + 1; if (n > 8) n = 8; chunk = n;
+                        int n = xe - x + 1; if (n > gles_opt_chunk) n = gles_opt_chunk; chunk = n;
                         float w0 = 1.0f / v[N_IW];
                         cu = v[N_U] * w0 * tex->w; cv = v[N_V] * w0 * tex->h;
                         float iw1 = v[N_IW] + gx[N_IW] * n, w1 = iw1 > 1e-9f ? 1.0f / iw1 : w0;
@@ -386,7 +387,7 @@ static void raster(const SV *a, const SV *b, const SV *c) {
                     }
                     float fu = cu, fv = cv;
                     float tr, tg, tb, ta_;
-                    if (tex->magl) {
+                    if (tex->magl && gles_opt_filter != 1 || gles_opt_filter == 2) {
                         fu -= 0.5f; fv -= 0.5f;
                         int ix = (int)floorf(fu), iy = (int)floorf(fv); float fx_ = fu - ix, fy = fv - iy;
                         uint32_t p00 = texel(tex, ix, iy), p10 = texel(tex, ix + 1, iy), p01 = texel(tex, ix, iy + 1), p11 = texel(tex, ix + 1, iy + 1);
@@ -412,7 +413,7 @@ static void raster(const SV *a, const SV *b, const SV *c) {
                     }
                 }
                 if (keep) {
-                    if (en_fog) { float f = v[N_F]; r = r * f + fog_col[0] * (1 - f); g = g * f + fog_col[1] * (1 - f); bl = bl * f + fog_col[2] * (1 - f); }
+                    if (en_fog && gles_opt_fog) { float f = v[N_F]; r = r * f + fog_col[0] * (1 - f); g = g * f + fog_col[1] * (1 - f); bl = bl * f + fog_col[2] * (1 - f); }
                     if (en_blend && !(blend_s == 1 && blend_d == 0)) {
                         uint16_t d = fb[pi];
                         float dr = (d >> 11) * (1.0f / 31.0f), dg = ((d >> 5) & 63) * (1.0f / 63.0f), db = (d & 31) * (1.0f / 31.0f);
@@ -469,7 +470,7 @@ static void g_DrawElements(void) { draw((int)A(0), (int)A(1), A(3), (int)A(2), 0
 static void g_DrawArrays(void) { draw((int)A(0), (int)A(2), 0, 0, (int)A(1)); }
 static void g_Clear(void) {
     uint32_t m = A(0);
-    uint16_t *fb = fb_host();
+    uint16_t *fb = backbuf;
     if ((m & 0x4000) && fb && !skipping) {
         int r = (int)(clearcol[0] * 31 + 0.5f), g = (int)(clearcol[1] * 63 + 0.5f), b = (int)(clearcol[2] * 31 + 0.5f);
         uint16_t c = (uint16_t)(r << 11 | g << 5 | b);

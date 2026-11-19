@@ -92,19 +92,22 @@ static int stream_frame(Stream *s, int *l, int *r) {
     return 1;
 }
 
+static unsigned dbg_frames, dbg_starved;
 void audio_frame(int frames) {
+    int starved = 0, anyused = 0;
     unsigned w = atomic_load(&ring_w), r = atomic_load(&ring_r);
     if (w - r > RING - (unsigned)frames - 1) return;   /* host is not draining: drop */
     for (int i = 0; i < frames; i++) {
         int L = 0, R_ = 0;
         for (int k = 0; k < 4; k++) {
             Stream *s = &streams[k]; int l, rr;
-            if (s->used && !s->paused && stream_frame(s, &l, &rr)) { L += l; R_ += rr; }
+            if (s->used && !s->paused) { anyused = 1; if (stream_frame(s, &l, &rr)) { L += l; R_ += rr; } else starved++; }
         }
         if (L > 32767) L = 32767; if (L < -32768) L = -32768; if (R_ > 32767) R_ = 32767; if (R_ < -32768) R_ = -32768;
         ring[2 * ((w + i) % RING)] = (int16_t)L; ring[2 * ((w + i) % RING) + 1] = (int16_t)R_;
     }
     atomic_store(&ring_w, w + frames);
+    if (anyused) { dbg_frames++; if (starved) dbg_starved++; if (getenv("GIZ_AUDIOLOG") && dbg_frames % 300 == 0) fprintf(stderr, "audio: %u/%u frames starved\n", dbg_starved, dbg_frames); }
 }
 int audio_read(int16_t *out, int frames) {
     static int primed;
